@@ -1,0 +1,71 @@
+{
+  "_comentario": "Catalogo de drivers PCL especificos por fabricante. O sistema NUNCA usa driver generico. Prioridade: 1) ./drivers/*.inf local  2) este catalogo (download oficial)  3) Windows Update inbox (filtrado, sem genericos). Adicione entradas conforme seu parque.",
+  "HP": {
+    "driver_base": "HP PCL 6",
+    "inf_hint": "hpcu*.inf / hp*.inf",
+    "urls": [
+      "https://support.hp.com/br-pt/drivers/printers"
+    ],
+    "downloads_diretos_verificados": [
+      "https://ftp.hp.com/pub/softlib/software13/printers/UPD/upd-pcl6-win10-x64-8.2.0.26778.zip",
+      "https://ftp.hp.com/pub/softlib/software13/UPD/upd-pcl6-x64-7.8.0.26261.zip"
+    ],
+    "nota": "Modelos enterprise exatos (ex: HP LaserJet MFP E52645) usam o driver 'HP LaserJet MFP E52645 PCL-6 (V4)' quando presente no Windows; sem ele, o app baixa sozinho o UPD PCL6 x64 do link acima (driver do fabricante, nunca generico do SO). Para o .inf especifico do modelo, baixe o Full Feature Driver do modelo e extraia em ./drivers/HP/",
+    "modelos": {
+      "LaserJet Pro M404": {"url": "", "inf": ""},
+      "LaserJet MFP M428": {"url": "", "inf": ""}
+    }
+  },
+  "Brother": {
+    "driver_base": "Brother PCL6",
+    "urls": ["https://support.brother.com/g/b/downloadtop.aspx?prod=howtodev"],
+    "nota": "Baixe o 'Printer Driver (PCL6)' do modelo exato e extraia em ./drivers/Brother/"
+  },
+  "Epson": {
+    "driver_base": "Epson PCL6",
+    "urls": ["https://epson.com.br/suporte"],
+    "nota": "Epson EcoTank/WorkForce: prefira o driver PCL6 do modelo. Se o modelo for so ESC/P-R, use o driver especifico ESC/P-R (ainda especifico, nunca generico)."
+  },
+  "Canon": {
+    "driver_base": "Canon Generic Plus PCL6 (por fabricante, por linha)",
+    "urls": ["https://www.canon.com.br/suporte"],
+    "nota": "Use o driver da linha exata (imageRUNNER / imageCLASS / PIXMA). O Generic Plus PCL6 da Canon e driver do fabricante, aceito como nao-generico do SO."
+  },
+  "Kyocera": {
+    "driver_base": "Kyocera PCL6 (KX Driver)",
+    "urls": ["https://www.kyoceradocumentsolutions.com.br/pt-br/download-center.html"]
+  },
+  "Ricoh": {
+    "driver_base": "Ricoh PCL6",
+    "urls": ["https://www.ricoh.com.br/suporte"]
+  },
+  "Xerox": {
+    "driver_base": "Xerox PCL6",
+    "urls": ["https://www.support.xerox.com/pt-br"]
+  },
+  "Lexmark": {
+    "driver_base": "Lexmark PCL6",
+    "urls": ["https://www.lexmark.com/pt_br/support/downloads.html"]
+  },
+  "Samsung": {
+    "driver_base": "Samsung PCL6",
+    "urls": ["https://www.hp.com/br-pt/shop/tech-takes/samsung-printer-support"],
+    "nota": "Linha Samsung foi incorporada a HP."
+  },
+  "OKI": {
+    "driver_base": "OKI PCL6",
+    "urls": ["https://www.oki.com/br/"]
+  },
+  "Pantum": {
+    "driver_base": "Pantum PCL6",
+    "urls": ["https://www.pantum.com/support/download-driver"]
+  },
+  "Elgin": {
+    "driver_base": "Elgin (modelo especifico)",
+    "urls": ["https://www.elgin.com.br/automacao/drivers"]
+  },
+  "Zebra": {
+    "driver_base": "ZebraDesigner Driver (modelo especifico)",
+    "urls": ["https://www.zebra.com/br/pt/support-downloads/printers.html"]
+  }
+}

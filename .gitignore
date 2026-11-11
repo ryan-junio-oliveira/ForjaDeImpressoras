@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.spec
+
+# Dados de execucao
+logs/
+ultimo_scan.json
+drivers/_downloads/
+*.log
+
+# Ambiente / IDE
+.env
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

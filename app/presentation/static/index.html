@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="pt-BR" data-rpg-theme="arcane" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forja de Impressoras — Arcane Installer</title>
+<link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
+<link rel="stylesheet" href="/static/vendor/bootstrap-icons.min.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="rpg-body">
+
+<!-- ============================ TOPO / GUILD HALL ============================ -->
+<header class="rpg-topbar">
+  <div class="topbar-left">
+    <div class="guild-crest" title="Forja de Impressoras">
+      <i class="bi bi-printer-fill crest-icon"></i>
+      <i class="bi bi-stars crest-sparkle"></i>
+    </div>
+    <div class="guild-info">
+      <div class="guild-title-row">
+        <span class="guild-name">FORJA DE IMPRESSORAS</span>
+        <span class="rpg-badge-lvl" id="rpgLevelBadge">NÍVEL 99</span>
+      </div>
+      <div class="guild-sub">Grimório de Detecção &amp; Instalação de Drivers PCL</div>
+    </div>
+  </div>
+
+  <!-- Quest Stepper -->
+  <div class="quest-stepper d-none d-lg-flex" id="questStepper">
+    <div class="quest-step is-active" id="qstep1" title="Passo 1: Detectar impressoras na rede ou USB">
+      <span class="step-num">I</span>
+      <span class="step-label">Radar de Varredura</span>
+    </div>
+    <i class="bi bi-chevron-right quest-divider"></i>
+    <div class="quest-step" id="qstep2" title="Passo 2: Escolher os artefatos a equipar">
+      <span class="step-num">II</span>
+      <span class="step-label">Inventário de Artefatos</span>
+    </div>
+    <i class="bi bi-chevron-right quest-divider"></i>
+    <div class="quest-step" id="qstep3" title="Passo 3: Instalar drivers oficiais no Windows">
+      <span class="step-num">III</span>
+      <span class="step-label">Forja do Sistema</span>
+    </div>
+  </div>
+
+  <!-- Topbar Controls -->
+  <div class="topbar-right">
+    <span id="adminBadge" class="rpg-rank-badge" title="Status de privilégio do Windows">
+      <i class="bi bi-shield-check me-1"></i>Mestre da Guilda
+    </span>
+
+    <div class="topbar-btn-group">
+      <button id="btnSound" class="rpg-btn-icon" type="button" title="Alternar efeitos sonoros RPG (Web Audio)">
+        <i class="bi bi-volume-up-fill" id="soundIcon"></i>
+      </button>
+
+      <button id="btnViewToggle" class="rpg-btn-icon" type="button" title="Alternar visualização: Grade de Inventário ou Tabela Tática">
+        <i class="bi bi-grid-fill" id="viewIcon"></i>
+      </button>
+
+      <div class="theme-dropdown dropdown">
+        <button class="rpg-btn-icon dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="Trocar Tema Visual do Reino">
+          <i class="bi bi-palette-fill"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end rpg-dropdown-menu">
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2 active" type="button" data-set-theme="arcane">
+              <span class="theme-dot dot-arcane"></span>
+              <span>Arcano Noturno (Dark Fantasy)</span>
+            </button>
+          </li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-set-theme="cyber">
+              <span class="theme-dot dot-cyber"></span>
+              <span>Cyber-Masmorra (Sci-Fi Neon)</span>
+            </button>
+          </li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-set-theme="paladin">
+              <span class="theme-dot dot-paladin"></span>
+              <span>Paladino Dourado (Luz Real)</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <button id="btnLog" class="rpg-btn rpg-btn-subtle" type="button" title="Ver Crônicas e Registro de Execução">
+        <i class="bi bi-journal-text me-1"></i>Crônicas
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ============================ MAIN STAGE ============================ -->
+<main class="rpg-main">
+
+  <!-- ==================== SALÃO DE EXPEDIÇÃO (CONTROLES) ==================== -->
+  <section class="rpg-card expedition-bar">
+    <div class="expedition-title">
+      <i class="bi bi-compass-fill me-1 text-accent"></i>
+      <span>SALA DE EXPEDIÇÃO &amp; SONDAGEM</span>
+    </div>
+
+    <div class="expedition-content">
+      <!-- Território de Rede -->
+      <div class="ctrl-cell ctrl-realm">
+        <label class="ctrl-label" for="netSelect">
+          <i class="bi bi-globe-americas me-1"></i>Território de Rede
+        </label>
+        <div class="input-with-icon">
+          <select id="netSelect" class="form-select form-select-sm rpg-input" title="Selecione a sub-rede local"></select>
+        </div>
+      </div>
+
+      <!-- Fronteiras Extras (CIDR) -->
+      <div class="ctrl-cell ctrl-cidr">
+        <label class="ctrl-label" for="netExtra">
+          <i class="bi bi-diagram-3-fill me-1"></i>Fronteiras Extras (CIDR)
+        </label>
+        <input id="netExtra" class="form-control form-control-sm rpg-input" type="text"
+               placeholder="ex.: 10.0.0.0/24" autocomplete="off" title="CIDRs adicionais separados por vírgula">
+      </div>
+
+      <!-- Botão Varrer -->
+      <div class="ctrl-cell ctrl-action-scan">
+        <label class="ctrl-label d-none d-md-block">&nbsp;</label>
+        <button id="btnScan" class="rpg-btn rpg-btn-hero w-100" type="button">
+          <i class="bi bi-radar me-1" id="scanBtnIcon"></i>
+          <span>EXPLORAR REINO</span>
+        </button>
+      </div>
+
+      <div class="expedition-sep"></div>
+
+      <!-- Sondar IP Específico -->
+      <div class="ctrl-cell ctrl-ip">
+        <label class="ctrl-label" for="ipManual">
+          <i class="bi bi-crosshair2 me-1"></i>Sondar Alvo Específico
+        </label>
+        <div class="input-group input-group-sm">
+          <input id="ipManual" class="form-control rpg-input mono" type="text"
+                 placeholder="192.168.15.50" autocomplete="off" title="Testar um IP individual">
+          <button id="btnTestIp" class="rpg-btn rpg-btn-secondary" type="button" title="Verificar se o alvo é uma impressora">
+            <i class="bi bi-search"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Configurações Rápidas -->
+      <div class="ctrl-cell ctrl-options ms-auto">
+        <label class="ctrl-label">
+          <i class="bi bi-gear-fill me-1"></i>Encantamentos
+        </label>
+        <div class="options-wrapper">
+          <div class="form-check form-switch m-0" title="Baixar drivers PCL automaticamente pela internet quando necessário">
+            <input class="form-check-input rpg-switch" type="checkbox" id="autoDownload" checked>
+            <label class="form-check-label small" for="autoDownload">Baixar drivers</label>
+          </div>
+          <button id="btnOpenDrivers" class="rpg-btn-icon-sm" type="button" title="Abrir pasta local de drivers (./drivers)">
+            <i class="bi bi-folder2-open"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== INVENTÁRIO DE ARTEFATOS (LISTA/GRID) ==================== -->
+  <section class="rpg-card inventory-stage">
+
+    <!-- Header do Inventário -->
+    <div class="inventory-head">
+      <div class="inv-head-left">
+        <div class="form-check m-0">
+          <input class="form-check-input rpg-checkbox" type="checkbox" id="checkAll" title="Marcar ou desmarcar todos os artefatos">
+        </div>
+        <div class="inv-title-group">
+          <span class="inv-title">ARTEFATOS DETECTADOS</span>
+          <span id="countBadge" class="rpg-count-pill">0</span>
+        </div>
+
+        <!-- Filtros de Raridade / Origem -->
+        <div class="filter-pills d-none d-md-flex">
+          <button class="pill-btn is-active" data-filter="all">Todos</button>
+          <button class="pill-btn" data-filter="ready"><i class="bi bi-check-circle me-1"></i>Prontos</button>
+          <button class="pill-btn" data-filter="pending"><i class="bi bi-exclamation-triangle me-1"></i>Sem Driver</button>
+          <button class="pill-btn" data-filter="net"><i class="bi bi-wifi me-1"></i>Rede</button>
+          <button class="pill-btn" data-filter="usb"><i class="bi bi-usb-plug me-1"></i>USB</button>
+        </div>
+      </div>
+
+      <div class="inv-head-right">
+        <!-- Busca Rápida -->
+        <div class="search-box">
+          <i class="bi bi-search search-icon"></i>
+          <input id="filter" class="form-control form-control-sm rpg-input search-input"
+                 type="search" placeholder="Filtrar por nome, IP, fabricante..." autocomplete="off">
+        </div>
+
+        <!-- Botão Resolver Drivers -->
+        <button id="btnResolve" class="rpg-btn-icon-sm" type="button" title="Reavaliar e re-resolver runas de drivers PCL">
+          <i class="bi bi-arrow-repeat"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Corpo do Inventário -->
+    <div class="inventory-body" id="listBody">
+      <!-- Grid de Cards RPG ou Lista Tática -->
+      <div id="printerRows" class="rpg-grid-view"></div>
+
+      <!-- Estado Vazio / Tela de Boas-Vindas da Guilda -->
+      <div id="emptyState" class="rpg-empty-state">
+        <div class="empty-rune-circle">
+          <i class="bi bi-broadcast rune-pulse"></i>
+        </div>
+        <h3 class="empty-title">Nenhum Artefato no Radar da Masmorra</h3>
+        <p class="empty-sub">
+          O salão está silencioso. Explore a rede local ou conecte impressoras via USB para identificá-las no inventário.
+        </p>
+
+        <div class="rpg-quest-cards">
+          <div class="quest-card-item">
+            <div class="qcard-icon"><i class="bi bi-radar"></i></div>
+            <div class="qcard-content">
+              <strong>1. Explorar o Reino</strong>
+              <span>Clique no botão dourado acima para varrer as sub-redes em busca de equipamentos ativos.</span>
+            </div>
+          </div>
+          <div class="quest-card-item">
+            <div class="qcard-icon"><i class="bi bi-check2-circle"></i></div>
+            <div class="qcard-content">
+              <strong>2. Selecionar Aliados</strong>
+              <span>Marque as caixas dos artefatos que deseja vincular a esta máquina.</span>
+            </div>
+          </div>
+          <div class="quest-card-item">
+            <div class="qcard-icon"><i class="bi bi-lightning-charge"></i></div>
+            <div class="qcard-content">
+              <strong>3. Forjar &amp; Equipar</strong>
+              <span>Instale os drivers oficiais PCL específicos diretamente no Windows com um clique.</span>
+            </div>
+          </div>
+        </div>
+
+        <button class="rpg-btn rpg-btn-hero mt-3" type="button" onclick="$('#btnScan').click()">
+          <i class="bi bi-radar me-1"></i>INICIAR PRIMEIRA VARREDURA
+        </button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============================ BARRA DE MANA / PROGRESSO ============================ -->
+<div class="rpg-progress-dock">
+  <div class="progress-details">
+    <div class="status-indicator">
+      <i class="bi bi-shield-shaded status-icon" id="statusIcon"></i>
+      <span id="statusText" class="status-msg">Grimório pronto para a jornada.</span>
+    </div>
+    <div class="xp-indicator">
+      <span class="xp-label">PROGRESSO:</span>
+      <span id="statusPct" class="xp-val">0%</span>
+    </div>
+  </div>
+  <div class="rpg-bar-track">
+    <div class="rpg-bar-fill" id="progressBar" style="width: 0%">
+      <span class="bar-shine"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ PAINEL DE COMANDO / AÇÕES ============================ -->
+<footer class="rpg-actions-footer">
+  <div class="footer-left">
+    <div class="select-tools">
+      <button id="btnSelectAll" class="rpg-link-btn" type="button">
+        <i class="bi bi-check-all me-1"></i>Marcar Todas
+      </button>
+      <i class="bi bi-dot tool-sep"></i>
+      <button id="btnSelectNone" class="rpg-link-btn" type="button">
+        <i class="bi bi-x-circle me-1"></i>Limpar
+      </button>
+    </div>
+    <span id="selInfo" class="rpg-sel-counter">0 selecionadas</span>
+  </div>
+
+  <div class="footer-right">
+    <button id="btnTestPage" class="rpg-btn rpg-btn-secondary" type="button" title="Enviar página de teste para as impressoras marcadas">
+      <i class="bi bi-file-earmark-check me-1"></i>Prova de Fogo
+    </button>
+
+    <button id="btnRemove" class="rpg-btn rpg-btn-danger" type="button" title="Expurgar impressoras ou portas antigas do Windows">
+      <i class="bi bi-trash3 me-1"></i>Expurgar…
+    </button>
+
+    <button id="btnInstall" class="rpg-btn rpg-btn-hero rpg-btn-glow px-4" type="button">
+      <i class="bi bi-lightning-charge-fill me-1"></i>FORJAR &amp; EQUIPAR
+    </button>
+  </div>
+</footer>
+
+<!-- ============================ FICHA DO ARTEFATO (OFFCANVAS DETALHES) ============================ -->
+<div class="offcanvas offcanvas-end rpg-drawer" tabindex="-1" id="detailsPanel" style="width: 460px">
+  <div class="offcanvas-header rpg-drawer-head">
+    <div class="drawer-title-group">
+      <i class="bi bi-gem me-2 text-accent"></i>
+      <h5 class="offcanvas-title">ATRIBUTOS DO ARTEFATO</h5>
+    </div>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Fechar"></button>
+  </div>
+  <div class="offcanvas-body rpg-drawer-body" id="detailsBody">
+    <div class="text-center py-5 text-muted small">
+      Selecione um artefato no inventário para inspecionar seus atributos e runas.
+    </div>
+  </div>
+</div>
+
+<!-- ============================ CRÔNICAS DE BATALHA (OFFCANVAS LOG) ============================ -->
+<div class="offcanvas offcanvas-end rpg-drawer" tabindex="-1" id="logPanel" style="width: 680px">
+  <div class="offcanvas-header rpg-drawer-head">
+    <div class="drawer-title-group">
+      <i class="bi bi-journal-code me-2 text-accent"></i>
+      <h5 class="offcanvas-title">CRÔNICAS DE EXECUÇÃO</h5>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <button id="btnClearLog" class="rpg-btn-sm rpg-btn-subtle" type="button">Limpar</button>
+      <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Fechar"></button>
+    </div>
+  </div>
+  <div class="offcanvas-body p-0 rpg-log-body">
+    <div id="logBox" class="rpg-terminal-log"></div>
+  </div>
+</div>
+
+<!-- ============================ CÂMARA DE EXPURGAMENTO (MODAL REMOÇÃO) ============================ -->
+<div class="modal fade rpg-modal" id="removeModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable modal-dialog-centered">
+    <div class="modal-content rpg-modal-content">
+      <div class="modal-header rpg-modal-header py-3">
+        <h6 class="modal-title d-flex align-items-center gap-2">
+          <i class="bi bi-fire text-danger"></i>
+          <span>CÂMARA DE EXPURGAMENTO</span>
+        </h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body rpg-modal-body">
+        <p class="small text-muted mb-2">
+          Selecione os equipamentos instalados no Windows que deseja banir do sistema operacional:
+        </p>
+
+        <div class="d-flex align-items-center gap-2 mb-2 small">
+          <span id="installedCount" class="rpg-count-pill">0</span>
+          <button class="rpg-link-btn" id="btnInstAll" type="button">Marcar Todas</button>
+          <i class="bi bi-dot tool-sep"></i>
+          <button class="rpg-link-btn" id="btnInstNone" type="button">Limpar</button>
+          <button class="rpg-btn-sm rpg-btn-subtle ms-auto" id="btnRefreshInstalled" type="button">
+            <i class="bi bi-arrow-repeat me-1"></i>Atualizar
+          </button>
+        </div>
+
+        <div id="installedList" class="rpg-installed-list"></div>
+
+        <div class="rpg-modal-options mt-3 pt-3 border-top border-secondary-subtle">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input rpg-switch" type="checkbox" id="optKeepVirtual" checked>
+            <label class="form-check-label small" for="optKeepVirtual">
+              Preservar virtuais (PDF, XPS, OneNote, Fax)
+            </label>
+          </div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input rpg-switch" type="checkbox" id="optRemovePorts" checked>
+            <label class="form-check-label small" for="optRemovePorts">
+              Expurgar portas de rede órfãs (Standard TCP/IP)
+            </label>
+          </div>
+          <div class="form-check form-switch">
+            <input class="form-check-input rpg-switch" type="checkbox" id="optRemoveDrivers">
+            <label class="form-check-label small" for="optRemoveDrivers">
+              Expurgar drivers órfãos não-Microsoft
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer rpg-modal-footer py-2">
+        <button type="button" class="rpg-btn rpg-btn-subtle" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="rpg-btn rpg-btn-danger-outline" id="btnRemoveAll">Banir Todas</button>
+        <button type="button" class="rpg-btn rpg-btn-danger" id="btnRemoveSel">Expurgar Selecionadas</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ NOTIFICAÇÕES TOAST ============================ -->
+<div class="toast-container position-fixed top-0 end-0 p-3" id="toasts"></div>
+
+<script src="/static/vendor/bootstrap.bundle.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

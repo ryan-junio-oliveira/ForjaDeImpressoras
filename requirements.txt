@@ -1,0 +1,12 @@
+# ---------------------------------------------------------------------
+# Instalador de Impressoras — dependencias
+# ---------------------------------------------------------------------
+# NUCLEO (varredura, resolucao de driver, instalacao, CLI e API web):
+#   somente biblioteca padrao do Python 3.10+ — nenhuma dependencia.
+#
+# FRONTEND (interface):
+#   - Web (Bootstrap 5.3) vendorizado em web/static/vendor -> sem CDN,
+#     funciona em rede isolada.
+#   - Modo desktop (hibrido PySide6 + QWebEngineView): requer PySide6.
+#     Sem PySide6 o app cai automaticamente no modo navegador.
+PySide6>=6.6
