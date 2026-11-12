@@ -7,6 +7,13 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.5] — 2026-11-12
+
+### Corrigido (sino tocando sem parar)
+- Cliques e marcações de caixa ficaram silenciosos; descoberta de impressora
+  dá no máximo uma badalada suave a cada 4s (antes eram 2 por impressora).
+  Sino agora só em: aviso informativo, descoberta e dobrado de falha
+
 ## [1.1.4] — 2026-11-12
 
 ### Corrigido (som fantasma sem ação do usuário)

@@ -156,13 +156,13 @@ const SoundFx = (() => {
     startLoop,
     setSoundEnabled,
     click() {
-      oneShot('bell.ogg', { vol: 0.3, rate: 1.35 + Math.random() * 0.35, debounce: 120 });
+      // Silencioso de proposito: badalar a cada clique vira sineta constante.
     },
     coin() {
-      oneShot('bell.ogg', { vol: 0.5, rate: 0.95 + Math.random() * 0.15 });
+      oneShot('bell.ogg', { vol: 0.4, rate: 0.95 + Math.random() * 0.15 });
     },
     select(on) {
-      oneShot('bell.ogg', { vol: 0.45, rate: on ? 1.15 + Math.random() * 0.2 : 0.8 + Math.random() * 0.15, debounce: 150 });
+      // Silencioso de proposito: marcar caixas nao pode badalar.
     },
     radar() {
       startLoop();
@@ -174,8 +174,9 @@ const SoundFx = (() => {
       startLoop();
     },
     found() {
-      oneShot('bell.ogg', { vol: 0.5, rate: 1.25 + Math.random() * 0.25, debounce: 1500 });
-      this.coin();
+      // Uma badalada suave por descoberta (debounce longo: varredura com
+      // dezenas de impressoras nao pode virar carrilhao).
+      oneShot('bell.ogg', { vol: 0.4, rate: 1.2 + Math.random() * 0.15, debounce: 4000 });
     },
     fanfare() {
       stopLoopEl();
