@@ -58,8 +58,12 @@ def drivers_dir() -> Path:
         alternativa.mkdir(parents=True, exist_ok=True)
         return alternativa
     d = base_dir() / "drivers"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    if _writable(d):
+        return d
+    alt = (Path(os.environ.get("LOCALAPPDATA", base_dir()))
+           / "ForjaDeImpressoras" / "drivers")
+    alt.mkdir(parents=True, exist_ok=True)
+    return alt
 
 
 def downloads_dir() -> Path:

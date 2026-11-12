@@ -53,4 +53,9 @@ class InstanceMutex:
 
 def already_running() -> bool:
     """True se ja existe outra instancia em execucao."""
-    return not InstanceMutex().acquire()
+    m = InstanceMutex()
+    ok = m.acquire()
+    if ok:
+        m.release()
+        return False
+    return True

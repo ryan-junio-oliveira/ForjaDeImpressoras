@@ -118,8 +118,8 @@ def _parse_value(tag: int, val: bytes):
         return int.from_bytes(val, "big")
     if tag == 0x43:  # TimeTicks
         return int.from_bytes(val, "big")
-    if tag in (0x82, 0x82 & 0xFF):
-        pass
+    if tag in (0x80, 0x81, 0x82):
+        return None
     # tenta texto
     try:
         t = val.decode("utf-8", errors="strict").strip()
@@ -147,6 +147,12 @@ def parse_response(buf: bytes):
         _, _, poff = _read_tlv(pdu, poff)  # request-id
         _, err, poff = _read_tlv(pdu, poff)  # error-status
         _, _, poff = _read_tlv(pdu, poff)  # error-index
+        try:
+            err_code = int.from_bytes(err, "big", signed=True)
+        except Exception:
+            err_code = 0
+        if err_code != 0:
+            return {}
         _, vblist, _ = _read_tlv(pdu, poff)
         voff = 0
         while voff < len(vblist):
@@ -155,7 +161,10 @@ def parse_response(buf: bytes):
             otag, oval, ioff = _read_tlv(vb, ioff)
             oid = _parse_oid(oval)
             vtag, vval, _ = _read_tlv(vb, ioff)
-            result[oid] = _parse_value(vtag, vval)
+            val = _parse_value(vtag, vval)
+            if val is None:
+                continue
+            result[oid] = val
     except Exception:
         pass
     return result

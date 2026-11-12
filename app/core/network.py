@@ -56,9 +56,6 @@ def get_all_local_networks() -> list[str]:
             mask = masks[i] if i < len(masks) else "255.255.255.0"
             try:
                 net = ipaddress.ip_network(f"{ip}/{mask}", strict=False)
-                # ignora redes gigantes/virtuais de hipervisor sem impressora? mantem, mas limita depois
-                if net.prefixlen < 16:
-                    continue
                 nets[str(net)] = None
             except Exception:
                 continue
@@ -77,10 +74,16 @@ def get_all_local_networks() -> list[str]:
 
 
 def parse_cidrs(text: str | None) -> list[str]:
-    """'192.168.15.0/24, 10.0.0.0/24' -> lista validada. IP puro vira /32? Nao: vira host unico."""
+    """'192.168.15.0/24, 10.0.0.0/24' -> lista validada. IP puro vira host unico."""
+    valid, _invalid = validate_cidrs(text)
+    return valid
+
+
+def validate_cidrs(text: str | None) -> tuple[list[str], list[str]]:
     out = []
+    invalid = []
     if not text:
-        return out
+        return out, invalid
     for part in re.split(r"[;,\s]+", text.strip()):
         if not part:
             continue
@@ -91,8 +94,8 @@ def parse_cidrs(text: str | None) -> list[str]:
             else:
                 out.append(str(ipaddress.ip_network(part, strict=False)))
         except Exception:
-            continue
-    return out
+            invalid.append(part)
+    return out, invalid
 
 
 def expand_targets(cidrs: list[str] | None = None, include_arp: bool = True,
@@ -107,6 +110,15 @@ def expand_targets(cidrs: list[str] | None = None, include_arp: bool = True,
     for c in cidrs:
         try:
             if "/" not in c:  # host unico (IP manual)
+                try:
+                    a = ipaddress.ip_address(c)
+                    if a.is_multicast or a.is_reserved or a.is_loopback \
+                            or a.is_unspecified:
+                        avisos.append(f"IP ignorado (nao varrivel): {c}")
+                        continue
+                except Exception:
+                    avisos.append(f"Rede invalida ignorada: {c}")
+                    continue
                 targets.append(c)
                 continue
             net = ipaddress.ip_network(c, strict=False)

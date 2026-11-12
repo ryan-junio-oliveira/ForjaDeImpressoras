@@ -18,8 +18,10 @@ def run_ps(cmd, timeout=120):
 
 def is_admin():
     try:
-        rc, _ = run_ps("[bool]([Security.Principal.WindowsIdentity]::GetCurrent().Groups -match 'S-1-5-32-544')")
-        return True
+        rc, out = run_ps("[bool]([Security.Principal.WindowsIdentity]::GetCurrent().Groups -match 'S-1-5-32-544')")
+        if rc != 0:
+            return False
+        return "true" in (out or "").lower()
     except Exception:
         return False
 
@@ -86,11 +88,15 @@ def add_printer_driver(driver_name, inf_path=None, timeout=180):
             root = Path(inf_path).parent
             inst = root / "Install.exe"
             if not inst.exists():
-                cands = list(root.rglob("Install.exe"))
+                cands = list(root.glob("Install.exe"))
+                if not cands:
+                    cands = [p for p in root.glob("*/Install.exe")]
+                if not cands:
+                    cands = [p for p in root.glob("*/*/Install.exe")]
                 inst = cands[0] if cands else None
             if inst:
                 r = winproc.run([str(inst), "/q"], capture_output=True, text=True,
-                                   timeout=300, cwd=str(inst.parent))
+                                   timeout=180, cwd=str(inst.parent))
                 log.append(f"Install.exe /q rc={r.returncode} {(r.stdout or '')[:400]}")
                 code2, out2 = run_ps(
                     f"Add-PrinterDriver -Name '{safe}' 2>&1 | Out-String", timeout=timeout)
@@ -109,12 +115,13 @@ def ensure_tcp_port(ip, port_number=9100, timeout=60):
     pname = f"TCPIPE:{ip}"
     safe = pname.replace("'", "''")
     code, out = run_ps(
-        f"$p=Get-PrinterPort -Name '{safe}' -ErrorAction SilentlyContinue; "
+        f"$ErrorActionPreference='Stop'; try {{ $p=Get-PrinterPort -Name '{safe}' -ErrorAction SilentlyContinue; "
         f"if(-not $p){{ Add-PrinterPort -Name '{safe}' -PrinterHostAddress '{ip}' -PortNumber {port_number} }} "
         f"else {{ Set-PrinterPort -Name '{safe}' -PrinterHostAddress '{ip}' -PortNumber {port_number} }}; "
-        f"Get-PrinterPort -Name '{safe}' | Out-String",
+        f"$ok=Get-PrinterPort -Name '{safe}' -ErrorAction Stop; 'PORTA-OK:'+$ok.Name }} catch {{ 'PORTA-FALHA:'+$_.Exception.Message }}",
         timeout=timeout)
-    return (code == 0), out, pname
+    ok = "PORTA-OK:" in (out or "")
+    return ok, out, pname
 
 
 def install_printer(printer_name, driver_name, port_name, timeout=60):
@@ -124,12 +131,19 @@ def install_printer(printer_name, driver_name, port_name, timeout=60):
     dn = driver_name.replace("'", "''")
     pt = port_name.replace("'", "''")
     code, out = run_ps(
+        f"$ErrorActionPreference='Stop'; try {{ "
         f"$e=Get-Printer -Name '{pn}' -ErrorAction SilentlyContinue; "
-        f"if($e){{ Remove-Printer -Name '{pn}' -Confirm:$false }}; "
-        f"Add-Printer -Name '{pn}' -DriverName '{dn}' -PortName '{pt}' 2>&1 | Out-String; "
-        f"Get-Printer -Name '{pn}' | Format-List Name,DriverName,PortName,PrinterStatus | Out-String",
+        f"if($e){{ Rename-Printer -Name '{pn}' -NewName '{pn}__backup__' -ErrorAction SilentlyContinue }}; "
+        f"Add-Printer -Name '{pn}' -DriverName '{dn}' -PortName '{pt}' -ErrorAction Stop; "
+        f"$ok=Get-Printer -Name '{pn}' -ErrorAction Stop; "
+        f"if($ok.DriverName -ne '{dn}' -or $ok.PortName -ne '{pt}'){{ throw 'verificacao pos-instalacao divergiu' }}; "
+        f"if(Get-Printer -Name '{pn}__backup__' -ErrorAction SilentlyContinue){{ Remove-Printer -Name '{pn}__backup__' -Confirm:$false }}; "
+        f"'INSTALACAO-OK'; Get-Printer -Name '{pn}' | Format-List Name,DriverName,PortName,PrinterStatus | Out-String }} "
+        f"catch {{ if(Get-Printer -Name '{pn}__backup__' -ErrorAction SilentlyContinue){{ Rename-Printer -Name '{pn}__backup__' -NewName '{pn}' -ErrorAction SilentlyContinue }}; 'INSTALACAO-FALHA:'+$_.Exception.Message }}",
         timeout=timeout)
-    return (code == 0), out
+    txt = out or ""
+    ok = "INSTALACAO-OK" in txt
+    return ok, out
 
 
 def print_test_page(printer_name, timeout=60):
@@ -140,7 +154,7 @@ def print_test_page(printer_name, timeout=60):
         f"if($p){{ $r=$p | Invoke-CimMethod -MethodName PrintTestPage; $r | Out-String }} "
         f"else {{ 'Impressora nao encontrada' }}",
         timeout=timeout)
-    if code == 0 and ("ReturnValue = 0" in out or "ReturnValue: 0" in out or "0" in out):
+    if code == 0 and ("ReturnValue = 0" in out or "ReturnValue: 0" in out):
         return True, out
     # fallback
     try:
@@ -228,7 +242,7 @@ def free_usb_port(timeout=60):
     for p in ports:
         if p not in used:
             return p
-    return ports[0]
+    return None
 
 
 def find_printer_by_name(name, timeout=60):
@@ -291,7 +305,11 @@ def install_usb_printer(printer_name, driver_name, inf_path=None, port_name=None
     # 3) criar (ou reaproveitar) a fila de impressora
     existing = find_printer_by_name(printer_name)
     if existing:
-        say(f"Fila '{printer_name}' ja existe (porta {existing.get('port')}).")
+        if (existing.get("driver") or "") == driver_name:
+            say(f"Fila '{printer_name}' ja existe com o driver correto (porta {existing.get('port')}).")
+        else:
+            say(f"Fila '{printer_name}' ja existe mas com driver '{existing.get('driver')}' "
+                f"(esperado '{driver_name}'). Mantida sem recriar; atualize o driver manualmente se necessario.")
     else:
         port = port_name or free_usb_port()
         if not port:
@@ -300,16 +318,18 @@ def install_usb_printer(printer_name, driver_name, inf_path=None, port_name=None
             return False, "\n".join(msgs)
         say(f"[3/4] Criando fila '{printer_name}' na porta {port}")
         code, out = run_ps(
+            f"$ErrorActionPreference='Stop'; try {{ "
             f"$e=Get-Printer -Name '{safe}' -ErrorAction SilentlyContinue; "
             f"if(-not $e){{ Add-Printer -Name '{safe}' -DriverName '{dsafe}' "
-            f"-PortName '{port}' 2>&1 | Out-String }}; "
-            f"Get-Printer -Name '{safe}' | "
-            f"Format-List Name,DriverName,PortName,PrinterStatus | Out-String",
+            f"-PortName '{port}' -ErrorAction Stop }}; "
+            f"$ok=Get-Printer -Name '{safe}' -ErrorAction Stop; "
+            f"'USB-OK:'+$ok.PortName }} catch {{ 'USB-FALHA:'+$_.Exception.Message }}",
             timeout=timeout)
-        if "Add-Printer" in out and ("Exception" in out or "erro" in out.lower()):
-            say("FALHA ao criar a fila USB: " + out.strip()[:700])
+        txt = (out or "")
+        if "USB-OK:" not in txt:
+            say("FALHA ao criar a fila USB: " + txt.strip()[:700])
             return False, "\n".join(msgs)
-        say(out.strip()[:700])
+        say(txt.strip()[:700])
 
     # 4) pagina de teste
     say("[4/4] Imprimindo pagina de teste...")
@@ -340,9 +360,16 @@ def list_printers(timeout=60):
     import json
     try:
         txt = (out or "").strip()
-        if not txt.startswith(("[", "{")):
+        m = None
+        import re as _re
+        for pat in (r"\[.*\]", r"\{.*\}"):
+            mm = _re.search(pat, txt, _re.S)
+            if mm:
+                m = mm.group(0)
+                break
+        if not m:
             return []
-        data = json.loads(txt)
+        data = json.loads(m)
         if isinstance(data, dict):
             data = [data]
         return [{"name": d.get("Name", ""), "driver": d.get("DriverName", ""),

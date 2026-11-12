@@ -22,6 +22,9 @@ import sys
 from app import __version__
 from app.core import driver_manager, printer_install, scanner
 from app.data import paths
+from app.platform import process as _proc
+
+_proc.install_readerthread_excepthook()
 
 BASE = paths.base_dir()
 
@@ -30,7 +33,13 @@ BASE = paths.base_dir()
 # CLI
 # --------------------------------------------------------------------------
 def cli_scan(cidrs=None):
-    from app.core.network import get_all_local_networks
+    from app.core.network import get_all_local_networks, validate_cidrs
+    if cidrs:
+        _valid, _invalid = validate_cidrs(cidrs)
+        if _invalid:
+            print(f"ERRO: CIDR invalido: {', '.join(_invalid)}")
+            sys.exit(2)
+        cidrs = ", ".join(_valid) if _valid else None
     alvo = cidrs or "todas as sub-redes locais " + str(get_all_local_networks())
     print(f"Varrendo: {alvo} ...")
     printers = scanner.scan_network(

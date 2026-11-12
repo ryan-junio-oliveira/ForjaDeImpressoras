@@ -55,7 +55,7 @@ def parse_inf_driver_names(inf_path: Path):
             return names
         # 1) disk names / driver names entre aspas em secoes de modelo
         # formato tipico: "HP LaserJet M404 PCL6" = InstSec, ...
-        for m in re.finditer(r'"([^"]*(?:PCL[^"]*|LaserJet[^"]*|Brother[^"]*|Epson[^"]*|Canon[^"]*|Kyocera[^"]*|Ricoh[^"]*|Xerox[^"]*|Lexmark[^"]*|Samsung[^"]*|Pantum[^"]*))"', text, re.I):
+        for m in re.finditer(r'"([^"]*(?:PCL[^"]*|LaserJet[^"]*|Brother[^"]*|Epson[^"]*|Canon[^"]*|Kyocera[^"]*|Ricoh[^"]*|Xerox[^"]*|Lexmark[^"]*|Samsung[^"]*|Pantum[^"]*|Elgin[^"]*|Zebra[^"]*|OKI[^"]*|ECOSYS[^"]*|TASKalfa[^"]*|KX[^"]*|Universal[^"]*|VersaLink[^"]*|AltaLink[^"]*|Phaser[^"]*|WorkCentre[^"]*|ImageRunner[^"]*|imageCLASS[^"]*|OfficeJet[^"]*|PageWide[^"]*|DesignJet[^"]*|MFP[^"]*|WorkForce[^"]*|EcoTank[^"]*|HL-[^"]*|DCP[^"]*|MFC[^"]*))"', text, re.I):
             cand = m.group(1).strip()
             if 4 < len(cand) < 120 and not is_generic_name(cand) \
                     and not any(j in cand for j in JUNK):
@@ -65,7 +65,7 @@ def parse_inf_driver_names(inf_path: Path):
         if sec:
             for m in re.finditer(r'^\s*\w+\s*=\s*"([^"]+)"', sec.group(1), re.M):
                 cand = m.group(1).strip()
-                if any(k in cand for k in ("HP", "Brother", "Epson", "Canon", "Kyocera", "Ricoh", "Xerox", "Lexmark", "Samsung", "Pantum", "OKI", "Elgin", "Zebra", "PCL", "LaserJet")):
+                if any(k in cand for k in ("HP", "Brother", "Epson", "Canon", "Kyocera", "Ricoh", "Xerox", "Lexmark", "Samsung", "Pantum", "OKI", "Elgin", "Zebra", "PCL", "LaserJet", "ECOSYS", "TASKalfa", "KX", "Universal", "VersaLink", "Phaser")):
                     if not is_generic_name(cand) and len(cand) < 120 \
                             and not any(j in cand for j in JUNK):
                         names.append(cand)
@@ -108,10 +108,19 @@ def find_local_inf(fabricante="", modelo=""):
             if "_downloads" in str(inf).lower():
                 continue
         try:
-            text = inf.read_bytes()[:60000].decode("utf-8", errors="ignore").lower()
+            raw = inf.read_bytes()[:60000]
+            text = None
+            for enc in ("utf-16", "utf-8-sig", "utf-8", "latin-1"):
+                try:
+                    t = raw.decode(enc)
+                    if "[Version]" in t or "[Manufacturer]" in t:
+                        text = t.lower()
+                        break
+                except Exception:
+                    continue
+            if text is None:
+                text = raw.decode("utf-8", errors="ignore").lower()
         except Exception:
-            continue
-        if is_generic_name(text[:2000]):
             continue
         if not unknown_fab and fab not in text and fab not in str(inf).lower():
             continue  # fabricante conhecido: .inf precisa ser do fabricante
@@ -128,7 +137,10 @@ def find_local_inf(fabricante="", modelo=""):
         if fabricante and fabricante.lower() in str(inf).lower():
             score += 5
         if score > 0:
-            results.append((inf, score, parse_inf_driver_names(inf)))
+            names = parse_inf_driver_names(inf)
+            if names and all(is_generic_name(n) for n in names):
+                continue  # so nomes genericos: descarta o .inf
+            results.append((inf, score, names))
     results.sort(key=lambda x: x[1], reverse=True)
     return results
 
@@ -193,13 +205,26 @@ def pick_inbox_driver(fabricante, modelo):
 def download_and_extract(url, dest_dir: Path):
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = url.split("/")[-1].split("?")[0] or "driver.bin"
+    fname = "".join(c for c in fname if c.isalnum() or c in (".-_")).strip(".") or "driver.bin"
     fpath = dest_dir / fname
     req = urllib.request.Request(url, headers={"User-Agent": "PrinterInstaller/1.0"})
-    with urllib.request.urlopen(req, timeout=120) as r, open(fpath, "wb") as f:
-        shutil.copyfileobj(r, f)
+    with urllib.request.urlopen(req, timeout=30) as r, open(fpath, "wb") as f:
+        total = 0
+        while True:
+            chunk = r.read(1024 * 256)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 1024 * 1024 * 1024:
+                raise ValueError("Arquivo excede 1GB — abortado.")
+            f.write(chunk)
     # extrai se zip
     if zipfile.is_zipfile(fpath):
         with zipfile.ZipFile(fpath) as z:
+            for m in z.namelist():
+                p = (dest_dir / m).resolve()
+                if dest_dir.resolve() not in p.parents and p != dest_dir.resolve():
+                    continue
             z.extractall(dest_dir)
         return dest_dir
     return fpath
@@ -221,7 +246,7 @@ def driver_matches_model(driver_name: str, modelo_canonico: str) -> bool:
     return any(t in nl for t in strong)
 
 
-def find_inf_by_hardware(hardware_ids=None, device_id="", modelo=""):
+def find_inf_by_hardware(hardware_ids=None, device_id="", modelo="", fabricante=""):
     """Procura um .inf que case com os HardwareIDs do dispositivo USB.
 
     Os IDs do PnP aparecem literalmente na secao [Models] do .inf, em duas
@@ -240,15 +265,30 @@ def find_inf_by_hardware(hardware_ids=None, device_id="", modelo=""):
                    if len(t) >= 4 and t not in ("laserjet", "officejet", "pagewide",
                                                "designjet", "printer", "impressora",
                                                "brother", "epson", "canon", "kyocera")]
+    fab = (fabricante or "").lower().strip()
+    fab_alias = {"hewlett-packard": "hp", "hewlett packard": "hp", "hp inc": "hp",
+                 "brother industries": "brother", "seiko epson": "epson"}
+    fab = fab_alias.get(fab, fab)
     results = []
     for inf in DRIVERS_DIR.rglob("*.inf"):
         try:
             raw = inf.read_bytes()[:400000]
-            text = raw.decode("utf-16", "ignore").lower()
-            if "usbprint" not in text and "[manufacturer" not in text:
+            text = None
+            for enc in ("utf-16", "utf-8-sig", "utf-8", "latin-1"):
+                try:
+                    t = raw.decode(enc)
+                    if "[Version]" in t or "[Manufacturer]" in t:
+                        text = t.lower()
+                        break
+                except Exception:
+                    continue
+            if text is None:
                 text = raw.decode("utf-8", errors="ignore").lower()
         except Exception:
             continue
+        if fab and fab not in ("desconhecido", "unknown", ""):
+            if fab not in text and fab not in str(inf).lower():
+                continue
         score = 0
         for h in ids:
             if h and h in text:
@@ -266,6 +306,8 @@ def find_inf_by_hardware(hardware_ids=None, device_id="", modelo=""):
         names = parse_inf_driver_names(inf)
         if not names:
             score -= 4
+        elif all(is_generic_name(n) for n in names):
+            continue
         results.append((inf, score, names))
     results.sort(key=lambda x: -x[1])
     return results[0] if results else (None, 0, [])
@@ -293,7 +335,8 @@ def resolve_usb_driver(device, allow_download=True, log=None):
                            f"(porta {fila.get('porta') or 'USB'})"}
     # 2) .inf local pelo hardware id
     inf, score, names = find_inf_by_hardware(device.get("hardware_ids"),
-                                              device.get("device_id"), modelo)
+                                              device.get("device_id"), modelo,
+                                              device.get("fabricante"))
     if inf and names:
         dname = names[0]
         if not is_generic_name(dname):
@@ -349,21 +392,28 @@ def resolve_driver(fabricante, modelo, modelo_canonico=None, allow_download=True
     if locais:
         inf, score, dnames = locais[0]
         dname = dnames[0] if dnames else None
-        if dname and not driver_matches_model(dname, canon):
-            warn = (f"AVISO: o .inf local '{dname}' nao cita o modelo {canon} — "
-                    f"usando mesmo assim por ser pacote do TI ({inf}).")
-            if log:
-                try:
-                    log(warn)
-                except Exception:
-                    pass
-        else:
-            warn = ""
-        detalhe = f".inf local ({inf}) score={score}"
-        if warn:
-            detalhe += " | " + warn
-        return {"origem": "local", "inf": str(inf), "driver_name": dname,
-                "detalhe": detalhe}
+        if dname and not is_generic_name(dname):
+            if not driver_matches_model(dname, canon):
+                warn = (f"AVISO: o .inf local '{dname}' nao cita o modelo {canon} — "
+                        f"usando mesmo assim por ser pacote do TI ({inf}).")
+                if log:
+                    try:
+                        log(warn)
+                    except Exception:
+                        pass
+            else:
+                warn = ""
+            detalhe = f".inf local ({inf}) score={score}"
+            if warn:
+                detalhe += " | " + warn
+            return {"origem": "local", "inf": str(inf), "driver_name": dname,
+                    "detalhe": detalhe}
+        # .inf local sem nome utilizavel: continua para download/inbox
+        if log:
+            try:
+                log(f".inf local {inf} sem nome de driver valido — tentando download/inbox.")
+            except Exception:
+                pass
     # 2) inbox que case com o MODELO EXATO
     inbox = pick_inbox_driver(fabricante, canon)
     if inbox and driver_matches_model(inbox, canon):

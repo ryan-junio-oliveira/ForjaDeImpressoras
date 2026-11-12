@@ -54,7 +54,7 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest().upper()
 
 
-def download_pack(pack: dict, log=None, progress_cb=None) -> Path:
+def download_pack(pack: dict, log=None, progress_cb=None, cancel_event=None) -> Path:
     """Baixa o pacote. Retorna o caminho do arquivo. Confere sha256 se informado."""
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     url = pack["url"]
@@ -62,26 +62,90 @@ def download_pack(pack: dict, log=None, progress_cb=None) -> Path:
     dest = DOWNLOAD_DIR / fname
     expected = (pack.get("sha256") or "").upper()
 
+    def _valid_file(p: Path) -> bool:
+        try:
+            if not p.exists() or p.stat().st_size < 200_000:
+                return False
+            with open(p, "rb") as f:
+                magic = f.read(4)
+            if fname.lower().endswith(".zip") and magic[:2] != b"PK":
+                return False
+            if fname.lower().endswith(".exe") and magic[:2] != b"MZ":
+                return False
+            return True
+        except Exception:
+            return False
+
     if dest.exists() and dest.stat().st_size > 1_000_000:
-        if expected and _sha256_file(dest) != expected:
-            dest.unlink(missing_ok=True)
-        else:
+        if expected:
+            try:
+                if _sha256_file(dest) == expected:
+                    if log:
+                        log(f"Pacote em cache: {fname}")
+                    return dest
+                dest.unlink(missing_ok=True)
+            except Exception:
+                dest.unlink(missing_ok=True)
+        elif _valid_file(dest):
             if log:
-                log(f"Pacote em cache: {fname}")
+                log(f"Pacote em cache (sem checksum, formato valido): {fname}")
             return dest
+        else:
+            dest.unlink(missing_ok=True)
 
     def report(blocks, block_size, total):
-        if progress_cb and total > 0:
+        if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+            raise CancelledError("Download cancelado pelo usuario.")
+        if progress_cb and total and total > 0:
             try:
                 progress_cb(min(100, int(blocks * block_size * 100 / total)))
+            except CancelledError:
+                raise
             except Exception:
                 pass
 
     if log:
         log(f"Baixando {pack['id']} ({url}) ...")
-    req = urllib.request.Request(url, headers={"User-Agent": "PrinterInstaller/1.0"})
-    # urlretrieve da progresso simples
-    urllib.request.urlretrieve(url, dest, reporthook=report if progress_cb else None)
+    import urllib.error as _uerr
+    for attempt in range(3):
+        try:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise CancelledError("Download cancelado pelo usuario.")
+            req = urllib.request.Request(url, headers={"User-Agent": "PrinterInstaller/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as r, open(dest, "wb") as f:
+                ctype = (r.headers.get("Content-Type") or "").lower()
+                if "text/html" in ctype:
+                    raise ValueError(f"URL retornou HTML ({ctype}) — link expirado?")
+                total = 0
+                while True:
+                    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                        raise CancelledError("Download cancelado pelo usuario.")
+                    chunk = r.read(1024 * 256)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 1024 * 1024 * 1024:
+                        raise ValueError("Arquivo excede 1GB — abortado.")
+                    f.write(chunk)
+                    if progress_cb:
+                        try:
+                            progress_cb(-1)
+                        except Exception:
+                            pass
+            break
+        except CancelledError:
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+        except Exception as e:
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if attempt == 2:
+                raise ValueError(f"Falha ao baixar {pack['id']} apos 3 tentativas: {e}")
     if expected:
         got = _sha256_file(dest)
         if got != expected:
@@ -89,7 +153,14 @@ def download_pack(pack: dict, log=None, progress_cb=None) -> Path:
             raise ValueError(f"Checksum divergente em {fname}. Download descartado.")
         if log:
             log("Checksum sha256 OK.")
+    elif not _valid_file(dest):
+        dest.unlink(missing_ok=True)
+        raise ValueError(f"Arquivo baixado invalido em {fname}.")
     return dest
+
+
+class CancelledError(RuntimeError):
+    pass
 
 
 def find_7z():
@@ -107,7 +178,7 @@ def find_7z():
     return None
 
 
-def extract_pack(archive: Path, pack_id: str, log=None) -> Path:
+def extract_pack(archive: Path, pack_id: str, log=None, cancel_event=None) -> Path:
     """Extrai para ./drivers/_downloads/<pack_id>/ e retorna a pasta."""
     import subprocess
     out = DOWNLOAD_DIR / pack_id
@@ -115,13 +186,31 @@ def extract_pack(archive: Path, pack_id: str, log=None) -> Path:
     # ja extraido (existe .inf do fabricante) -> reaproveita, nao re-extrai
     try:
         if list(out.rglob("*.inf")):
-            if log:
-                log(f"Pacote ja extraido em {out}")
-            return out
+            try:
+                if archive.exists() and archive.stat().st_mtime > max(
+                        p.stat().st_mtime for p in out.rglob("*.inf")):
+                    pass  # archive mais novo: re-extrai abaixo
+                else:
+                    if log:
+                        log(f"Pacote ja extraido em {out}")
+                    return out
+            except Exception:
+                if log:
+                    log(f"Pacote ja extraido em {out}")
+                return out
     except Exception:
         pass
     if archive.suffix.lower() == ".zip" and zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as z:
+            for m in z.namelist():
+                if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                    raise CancelledError("Extracao cancelada.")
+                p = (out / m).resolve()
+                try:
+                    if out.resolve() not in p.parents and p != out.resolve():
+                        continue
+                except Exception:
+                    continue
             z.extractall(out)
         if log:
             log(f"Extraido em {out}")
@@ -135,7 +224,7 @@ def extract_pack(archive: Path, pack_id: str, log=None) -> Path:
         if z7:
             try:
                 winproc.run([z7, "x", "-aoa", f"-o{out}", str(archive), "-y"],
-                            timeout=600, capture_output=True)
+                            timeout=180, capture_output=True)
                 if list(out.rglob("*.inf")):
                     if log:
                         log(f"Extraido com 7-Zip em {out}")
@@ -145,7 +234,7 @@ def extract_pack(archive: Path, pack_id: str, log=None) -> Path:
         silenciosos = (["/extract", str(out)], ["/s", f"/f{out}"])
         for args in silenciosos:
             try:
-                winproc.run([str(archive)] + args, timeout=600, capture_output=True)
+                winproc.run([str(archive)] + args, timeout=180, capture_output=True)
                 if list(out.rglob("*.inf")):
                     if log:
                         log(f"Extraido em {out}")
@@ -171,7 +260,18 @@ def find_inf_for_model(root: Path, vendor: str, modelo_canonico: str, inf_hint: 
     best = None
     for inf in root.rglob("*.inf"):
         try:
-            text = inf.read_bytes()[:80000].decode("utf-8", errors="ignore").lower()
+            raw = inf.read_bytes()[:80000]
+            text = None
+            for enc in ("utf-16", "utf-8-sig", "utf-8", "latin-1"):
+                try:
+                    t = raw.decode(enc)
+                    if "[Version]" in t or "[Manufacturer]" in t:
+                        text = t.lower()
+                        break
+                except Exception:
+                    continue
+            if text is None:
+                text = raw.decode("utf-8", errors="ignore").lower()
         except Exception:
             continue
         score = 0
@@ -193,18 +293,33 @@ def find_inf_for_model(root: Path, vendor: str, modelo_canonico: str, inf_hint: 
         dnames = parse_inf_driver_names(inf)
         if not dnames:
             score -= 5
+        elif all((__import__("app.core.driver_manager", fromlist=["is_generic_name"]).is_generic_name(n) for n in dnames)):
+            continue
         if best is None or score > best[1]:
             best = (inf, score, dnames)
+    if best is not None and best[1] < 4:
+        return None
     return best
 
 
 def ensure_driver_pack(vendor: str, modelo_canonico: str, log=None, progress_cb=None,
-                        hardware_ids=None, device_id: str = ""):
+                        hardware_ids=None, device_id: str = "", cancel_event=None):
     """Baixa+extrai o pack do fabricante e retorna (inf, driver_name, pack_id) ou None."""
-    for pack in packs_for_vendor(vendor, modelo_canonico):
+    packs = packs_for_vendor(vendor, modelo_canonico)
+    if not packs:
+        if log:
+            try:
+                log(f"Sem packs cadastrados para {vendor} {modelo_canonico}.")
+            except Exception:
+                pass
+        return None
+    for pack in packs:
         try:
-            archive = download_pack(pack, log=log, progress_cb=progress_cb)
-            root = extract_pack(archive, pack["id"], log=log)
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                from .driver_download import CancelledError as _C
+                raise _C("Operacao cancelada.")
+            archive = download_pack(pack, log=log, progress_cb=progress_cb, cancel_event=cancel_event)
+            root = extract_pack(archive, pack["id"], log=log, cancel_event=cancel_event)
             found = find_inf_for_model(root, vendor, modelo_canonico, pack.get("inf_hint", ""),
                                        hardware_ids=hardware_ids, device_id=device_id)
             if found:

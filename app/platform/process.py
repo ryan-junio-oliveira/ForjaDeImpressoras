@@ -10,6 +10,7 @@ sendo capturada por pipes normalmente.
 """
 import subprocess
 import sys
+import threading
 
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -29,3 +30,39 @@ def popen(*args, **kwargs):
         flags = int(kwargs.get("creationflags") or 0)
         kwargs["creationflags"] = flags | CREATE_NO_WINDOW
     return subprocess.Popen(*args, **kwargs)
+
+
+def install_readerthread_excepthook():
+    """Silencia o ruido `OSError: [Errno 9] Bad file descriptor`.
+
+    No Windows, matar um processo com timeout (ex.: ping estourado no
+    ping sweep) corre contra as reader-threads internas do `subprocess`:
+    `_readerthread` le/fecha um pipe ja fechado e o `threading` imprime
+    o traceback no console. E inofensivo (a chamada ja retornou), mas
+    assusta e esconde os logs reais. Filtra SOMENTE esse caso.
+    Idempotente: pode chamar varias vezes.
+    """
+    prev = threading.excepthook
+
+    def _hook(args):
+        try:
+            ev = getattr(args, "exc_value", None)
+            if isinstance(ev, OSError) and ev.errno == 9:
+                tb = getattr(args, "exc_traceback", None)
+                while tb is not None:
+                    code = tb.tb_frame.f_code
+                    if (code.co_name == "_readerthread"
+                            and code.co_filename.replace("\\", "/").endswith("subprocess.py")):
+                        return
+                    tb = tb.tb_next
+        except Exception:
+            pass
+        try:
+            prev(args)
+        except Exception:
+            pass
+
+    _hook.__name__ = "forja_readerthread_filter"
+    if getattr(prev, "__name__", "") == "forja_readerthread_filter":
+        return
+    threading.excepthook = _hook

@@ -76,6 +76,33 @@ def list_usb_devices(include_non_usb=False):
             "service": _norm(d.get("Service")),
             "usb": is_usb,
         })
+
+    if not out_list:
+        try:
+            ps2 = "Get-PnpDevice USBPRINT fallback"
+            _c2, out2 = run_ps(
+                "Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'USBPRINT*' } | "
+                "Select-Object -First 20 FriendlyName, InstanceId, Status, Manufacturer | "
+                "ConvertTo-Json -Compress 2>&1 | Out-String", timeout=60)
+            txt2 = (out2 or "").strip()
+            if txt2.startswith(("[", "{")):
+                d2 = json.loads(txt2[txt2.find("[") if "[" in txt2 else txt2.find("{"):])
+                if isinstance(d2, dict):
+                    d2 = [d2]
+                for dd in d2:
+                    if not dd.get("InstanceId"):
+                        continue
+                    out_list.append({
+                        "nome": _norm(dd.get("FriendlyName") or dd.get("Name")),
+                        "device_id": str(dd.get("InstanceId")),
+                        "hardware_ids": [],
+                        "fabricante": _norm(dd.get("Manufacturer")),
+                        "status": _norm(dd.get("Status")),
+                        "service": "",
+                        "usb": True,
+                    })
+        except Exception:
+            pass
     return out_list
 
 
@@ -131,10 +158,37 @@ def model_from_device(device):
     return name or device.get("nome") or "Impressora USB"
 
 
+VENDOR_NORMALIZE = {
+    "hewlett-packard": "HP",
+    "hewlett packard": "HP",
+    "hp inc": "HP",
+    "hp": "HP",
+    "brother industries": "Brother",
+    "brother industries, ltd.": "Brother",
+    "seiko epson": "Epson",
+    "epson": "Epson",
+    "canon": "Canon",
+    "kyocera": "Kyocera",
+    "kyocera document solutions": "Kyocera",
+    "ricoh": "Ricoh",
+    "xerox": "Xerox",
+    "lexmark": "Lexmark",
+    "samsung": "Samsung",
+    "oki": "OKI",
+    "okidata": "OKI",
+    "zebra": "Zebra",
+    "pantum": "Pantum",
+    "elgin": "Elgin",
+}
+
+
 def vendor_from_device(device, model=""):
     """Fabricante a partir do campo Manufacturer ou do prefixo do nome."""
     man = (device.get("fabricante") or "").strip()
-    if man and man.lower() not in ("microsoft", "desconhecido"):
+    norm = VENDOR_NORMALIZE.get(man.lower().strip())
+    if norm:
+        return norm
+    if man and man.lower() not in ("microsoft", "desconhecido", "unknown", ""):
         return man
     blob = f"{man} {model} {device.get('device_id','')}"
     for kw, vendor in (("hewlett", "HP"), ("hp", "HP"), ("laserjet", "HP"),

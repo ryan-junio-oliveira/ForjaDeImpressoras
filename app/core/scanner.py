@@ -7,7 +7,9 @@ import ipaddress
 import socket
 import platform
 import re
+import subprocess
 import threading
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -20,6 +22,25 @@ PRINTER_PORTS = [9100, 515, 631, 161, 80, 443]
 # 9100/515 = prova de hardware (JetDirect/LPD). 631 sozinha NAO prova nada:
 # pode ser servidor com CUPS. 631 so conta junto de device-id/modelo/EWS.
 RAW_PORTS = {9100, 515}
+
+
+def _valid_ip(s):
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except Exception:
+        return False
+
+
+def _skip_ip(ip) -> bool:
+    """True para IPs que nunca devem entrar no sweep (multicast, loopback...)."""
+    try:
+        a = ipaddress.ip_address(str(ip).strip())
+        return (a.is_multicast or a.is_reserved or a.is_loopback
+                or a.is_unspecified)
+    except Exception:
+        return True
+
 
 # enterprise OID -> fabricante (sysObjectID 1.3.6.1.4.1.XXXX)
 ENTERPRISE_VENDOR = {
@@ -65,10 +86,8 @@ def detect_vendor(sys_descr="", sys_object_id="", extra="", hostname=""):
     blob = f"{sys_descr} {extra}".lower()
     hn = (hostname or "").upper()
     # 0) hostname JetDirect/ZeroConf: NPIxxxxxx = HP, BRN/BROTHER = Brother
-    if hn.startswith("NPI") or hn.startswith("HP"):
-        return "HP"
-    if hn.startswith("BRN") or "BROTHER" in hn:
-        return "Brother"
+    if hn.startswith("NPI") or hn.startswith("BRN") or "BROTHER" in hn:
+        return "HP" if hn.startswith("NPI") else "Brother"
     if hn.startswith("EPSON"):
         return "Epson"
     # 1) enterprise OID
@@ -126,13 +145,19 @@ def parse_arp_table():
 
 
 def ping_host(ip, timeout_ms=800):
+    # So precisamos do returncode: DEVNULL evita pipes + reader-threads
+    # (no Windows, matar dezenas de ping.exe com pipes gera travamento
+    # e o ruido "Bad file descriptor" do subprocess).
+    if _skip_ip(ip):
+        return False
     system = platform.system().lower()
     if "windows" in system:
-        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip]
+        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), str(ip).strip()]
     else:
-        cmd = ["ping", "-c", "1", "-W", "1", ip]
+        cmd = ["ping", "-c", "1", "-W", "1", str(ip).strip()]
     try:
-        r = winproc.run(cmd, capture_output=True, timeout=5)
+        r = winproc.run(cmd, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=8)
         return r.returncode == 0
     except Exception:
         return False
@@ -327,13 +352,14 @@ def scan_host(ip, communities=("public",), do_http=True):
     except Exception:
         modelo_canonico, confianca = model, "baixa"
 
+    need_server_check = (9100 not in ports_open) and (
+        vendor == "Desconhecido" or not has_snmp_printer_like(snmp_data, sys_descr, hr_descr, prt_name))
     is_printer, reasons, _score = classify_host(
         ports_open, sys_descr, hr_descr, prt_name, vendor,
         http_title, ews_model, http_server, ipp_model,
         ipp_device_id, ipp_path, hostname, has_snmp=bool(snmp_data),
         server_ports=[p for p in (445, 135, 3389) if check_port(ip, p, timeout=0.6)]
-        if (vendor == "Desconhecido" and not has_snmp_printer_like(snmp_data, sys_descr, hr_descr, prt_name))
-        else [])
+        if need_server_check else [])
     if not is_printer:
         return None
     return finalize_host(ip, hostname, ports_open, vendor, model, modelo_canonico,
@@ -443,11 +469,82 @@ def finalize_host(ip, hostname, ports_open, vendor, model, modelo_canonico, conf
 
 def check_single_ip(ip, communities=("public",)):
     """Testa um IP manual (espelha HyperViewer check_single_ip)."""
-    return scan_host(ip.strip(), communities=communities)
+    clean = (ip or "").strip()
+    try:
+        ipaddress.ip_address(clean)
+    except Exception:
+        raise ValueError(f"IP invalido: {ip}")
+    return scan_host(clean, communities=communities)
+
+
+def _cancelled(cancel_event) -> bool:
+    try:
+        return bool(cancel_event is not None and cancel_event.is_set())
+    except Exception:
+        return False
+
+
+def _drain(ex, futs, base, total, progress_cb, cancel_event, deadline_s,
+           msg_fn, on_done, tick_s=5):
+    """Consome futuros sem congelar nunca.
+
+    - `as_completed(..., timeout=tick_s)`: a cada tick sem conclusao emite
+      heartbeat em vez de travar;
+    - `deadline_s`: teto total; o que sobrar e contado como morto;
+    - `shutdown(wait=False)`: nao faz join em thread presa.
+    Retorna a quantidade concluida.
+    """
+    pending = set(futs)
+    done = 0
+    start = time.monotonic()
+    last_beat = start
+    while pending:
+        if _cancelled(cancel_event):
+            for fu in pending:
+                try:
+                    fu.cancel()
+                except Exception:
+                    pass
+            break
+        if time.monotonic() - start > deadline_s:
+            break
+        try:
+            for f in as_completed(pending, timeout=tick_s):
+                pending.discard(f)
+                done += 1
+                if progress_cb:
+                    try:
+                        progress_cb(base + done, total,
+                                    msg_fn(done, len(futs), futs.get(f, "")))
+                    except Exception:
+                        pass
+                try:
+                    on_done(f, futs.get(f, ""))
+                except Exception:
+                    pass
+                if _cancelled(cancel_event):
+                    break
+        except TimeoutError:
+            pass
+        now = time.monotonic()
+        if pending and now - last_beat >= 10:
+            last_beat = now
+            if progress_cb:
+                try:
+                    progress_cb(base + done, total,
+                                f"Aguardando {len(pending)} host(s) lentos... "
+                                f"({done}/{len(futs)})")
+                except Exception:
+                    pass
+    try:
+        ex.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    return done
 
 
 def scan_network(cidrs=None, communities=("public",), max_workers=64, progress_cb=None,
-                 include_arp=True):
+                 include_arp=True, cancel_event=None):
     """
     Varre uma ou varias sub-redes. cidrs: None (auto=todas locais), str ou lista.
     Aceita "192.168.15.0/24, 10.0.0.0/24" e hosts unicos ("192.168.1.50").
@@ -472,49 +569,62 @@ def scan_network(cidrs=None, communities=("public",), max_workers=64, progress_c
     for a in avisos:
         fire(a)
     # Etapa 1: ping sweep rapido para popular ARP (paralelo) — 0..50%
+    # Ping usa DEVNULL (sem pipes/reader-threads) e a coleta tem teto:
+    # nenhum futuro preso congela a varredura.
     fire(f"Ping em {total} hosts...")
     alive = []
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(ping_host, ip): ip for ip in targets}
-        done = 0
-        for f in as_completed(futs):
-            done += 1
-            if progress_cb:
-                try:
-                    progress_cb(done, total * 2, f"Ping {done}/{total}")
-                except Exception:
-                    pass
-            try:
-                if f.result():
-                    alive.append(futs[f])
-            except Exception:
-                pass
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futs = {ex.submit(ping_host, ip): ip
+                for ip in targets if not _skip_ip(ip)}
+    except Exception:
+        futs = {}
+
+    def _on_pong(f, ip):
+        try:
+            if ip and f.result():
+                alive.append(ip)
+        except Exception:
+            pass
+
+    _drain(ex, futs, 0, total * 2, progress_cb, cancel_event,
+           min(600, max(120, int(len(futs) * 1.5))),
+           lambda d, t, ip: f"Ping {d}/{len(futs)}", _on_pong)
     # inclui ARP mesmo se ping falhou (impressora pode bloquear ICMP)
     for ip in arp:
         if ip not in alive:
             alive.append(ip)
 
     # Etapa 2: investiga candidatos (portas + SNMP + HTTP) — 50..100%
+    # Mesma protecao da etapa 1: heartbeat + teto + sem join bloqueante.
     base = total
     fire(f"Identificando impressoras em {len(alive)} hosts ativos...")
     printers = []
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(scan_host, ip, communities): ip for ip in alive}
-        done = 0
-        for f in as_completed(futs):
-            done += 1
-            if progress_cb:
-                try:
-                    progress_cb(base + done, base + len(alive), f"Verificando {futs[f]} ({done}/{len(alive)})")
-                except Exception:
-                    pass
-            try:
-                r = f.result()
-                if r:
-                    r["mac"] = arp.get(r["ip"], "")
-                    printers.append(r)
-            except Exception:
-                pass
+    ex2 = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futs2 = {ex2.submit(scan_host, ip, communities): ip for ip in alive}
+    except Exception:
+        futs2 = {}
 
-    printers.sort(key=lambda d: ipaddress.ip_address(d["ip"]))
+    def _on_host(f, ip):
+        try:
+            r = f.result()
+        except Exception:
+            r = None
+        if r:
+            r["mac"] = arp.get(r["ip"], "")
+            printers.append(r)
+
+    _drain(ex2, futs2, base, base + len(alive) if alive else 1,
+           progress_cb, cancel_event,
+           min(900, max(180, len(futs2) * 4)),
+           lambda d, t, ip: f"Verificando {ip} ({d}/{len(futs2)})", _on_host)
+
+    try:
+        printers.sort(key=lambda d: (ipaddress.ip_address(d["ip"]) if _valid_ip(d.get("ip")) else ipaddress.ip_address("255.255.255.255"), str(d.get("ip"))))
+    except Exception:
+        try:
+            printers.sort(key=lambda d: str(d.get("ip")))
+        except Exception:
+            pass
     return printers
