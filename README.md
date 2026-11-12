@@ -17,10 +17,15 @@ A interface aparece SOMENTE na janela desktop — nenhum fluxo abre o navegador.
 ## Como usar
 
 ```bat
-run.bat                      :: híbrido desktop (recomendado) — eleva para Admin
-run.bat servidor             :: só sobe o servidor local (desenvolvimento)
-run.bat scan [CIDR]          :: varredura pela linha de comando
-run.bat --help               :: todas as opções
+run.bat                      :: janela desktop (recomendado) — eleva para Admin
+```
+
+Modos extras direto no Python (sem elevação automática):
+
+```bat
+python main.py --mode server    :: só sobe o servidor local (desenvolvimento)
+python main.py --scan [CIDR]    :: varredura pela linha de comando
+python main.py --help           :: todas as opções
 ```
 
 **O fluxo da tela é sempre o mesmo:**
@@ -170,6 +175,18 @@ atalho no menu Iniciar e na área de trabalho.
 ```bat
 python tests\test_smoke.py
 ```
+
+## Creditos de audio (CC-BY 3.0)
+
+Musica medieval vendorizada em `app/presentation/static/audio/`:
+
+- `minstrel.mp3` — "Minstrel Guild", Kevin MacLeod (incompetech.com),
+- `lord.mp3` — "Lord of the Land", Kevin MacLeod (incompetech.com),
+- `celtic.mp3` — "Celtic Impulse", Kevin MacLeod (incompetech.com),
+- `fanfare.mp3` — "The Rule", Kevin MacLeod (incompetech.com),
+- `mighty.mp3` — "Mighty and Meek", Kevin MacLeod (incompetech.com).
+  Todas acima licenciadas em Creative Commons Attribution 3.0 (`CC BY 3.0`).
+- `bell.ogg` — sino de bronze, domínio público (PDSounds, via Wikimedia Commons).
 
 ## Requisitos
 

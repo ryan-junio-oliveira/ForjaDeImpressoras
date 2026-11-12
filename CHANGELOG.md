@@ -7,6 +7,104 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.4] — 2026-11-12
+
+### Corrigido (som fantasma sem ação do usuário)
+- Replay do SSE re-enviava `done` antigos a cada (re)conexão: abrir a página
+  (ou qualquer reconexão) re-tocava fanfarra/game-over e reabria toasts de
+  operações passadas. `done` não é mais repetido; de `busy` só o estado atual
+
+## [1.1.3] — 2026-11-12
+
+### Corrigido (varredura congelando no ping + spam `Bad file descriptor`)
+- **Ping sem pipes**: `ping_host` só usa o returncode, agora com `DEVNULL`
+  em vez de `capture_output` — elimina as reader-threads e o travamento sob
+  dezenas de `ping.exe` simultâneos no Windows
+- **Coleta com teto**: `_drain()` com heartbeat a cada 5s sem conclusão,
+  prazo total por etapa e `shutdown(wait=False)` — nenhum futuro preso
+  congela a varredura; IPs não-varríveis (multicast/loopback/inválidos)
+  são pulados antes de spawnar processo
+- **Filtro de ruído**: `threading.excepthook` instalado no `main.py` engole
+  somente o `OSError 9` da `_readerthread` do `subprocess`; resto passa normal
+
+## [1.1.2] — 2026-11-12
+
+### Alterado
+- **`run.bat` mínimo** (10 linhas): só garante admin e roda
+  `python main.py --mode desktop`. Sem modos, sem repasse de args, sem `for`
+  — escaneamento e servidor via `python main.py` direto. CRLF garantido
+  (LF puro abortava o cmd com "... foi inesperado neste momento")
+- **Tema padrão agora é Oficina Industrial** (carvão + laranja segurança,
+  faixa zebrada, fonte Oswald) no lugar do steampunk; quem tinha steampunk
+  salvo migra sozinho
+- **Música medieval de verdade** (arquivos em `static/audio`, funciona offline):
+  rádio menestrel (3 loops sorteados sem repetição, emenda automática),
+  2 fanfarras sorteadas no sucesso, dobrado fúnebre irregular na falha
+  e sino com pitch aleatório nos cliques; bonecos emoji removidos.
+  Créditos no README (Kevin MacLeod, CC-BY 3.0)
+- **Temas Arcano e Cyber removidos**: ficam só Oficina Industrial (padrão) e
+  Paladino; quem tinha os antigos salvos migra sozinho para o Industrial
+- **Botão de som corrigido**: mutar agora pausa na hora o loop e qualquer
+  faixa em voo (`setSoundEnabled` centralizado); desmutar retoma o loop se
+  a operação continua — antes o mudo ignorava o que já tocava
+
+## [1.1.1] — 2026-11-12
+
+### Corrigido (`run.bat` não executava o app como admin)
+- **Elevação quebrava os argumentos**: `-ArgumentList '%*'` ia como UMA string
+  só (cmd não entende aspas simples) e com `%*` vazio injetava um argumento
+  fantasma `''` — o app elevado recebia `scan 192.168...` como modo único ou
+  `main.py --mode desktop ''` e morria no argparse. Agora cada argumento é
+  repassado separado (array PowerShell `'arg1','arg2'`) e sem args não envia
+  `-ArgumentList`
+- **`run.bat scan <CIDR>` perdia o CIDR**: `:scan` só repassava `%1` e o modo
+  `desktop` repassava `%*` cru (duplicava `browser`/`servidor` no argparse).
+  Modos agora consomem a própria palavra e repassam só o resto (`TAIL`/`SCAN`);
+  múltiplos CIDRs são unidos com vírgula
+- **"Python não encontrado" após o UAC**: o PATH do token elevado difere do
+  usuário. O Python agora é resolvido pelo caminho completo (`where py`,
+  fallback `where python`), com checagem de versão 3.10+
+- **`run.bat scan` não pede mais UAC** (varredura é somente-leitura) e
+  `FORJA_NO_ELEVATE=1` pula a elevação para depuração
+- `pause` só em erro no modo desktop (antes prendia o console após fechar a GUI);
+  `servidor` repassa `--port` e demais flags
+- **`.bat` com LF puro abortava no cmd** (`... foi inesperado neste momento`):
+  `run.bat` e `scripts/build.bat` normalizados para CRLF; detecção do Python
+  refeita sem parênteses dentro do `IN (...)` do `for` (via `where py`),
+  que era outro gatilho do mesmo erro
+
+## [1.1.0] — 2026-11-12
+
+### Corrigido (bloco 1 — bugs críticos)
+- `is_admin` retornava sempre True; agora interpreta o retorno do PowerShell
+- `print_test_page` aceitava qualquer `0` no log; agora exige `ReturnValue = 0`
+- `ensure_tcp_port`/`install_printer` com `-ErrorAction Stop` + verificação pós-instalação + backup/rollback da fila antiga
+- `free_usb_port` retornava porta ocupada; agora retorna None
+- `install_usb_printer` verificava por sniff de texto; agora verifica `USB-OK` + compara driver da fila existente
+- `list_printers` quebrava com `WARNING:` antes do JSON; agora extrai substring JSON
+- `add_printer_driver`: busca `Install.exe` limitada a 3 níveis, timeout 180s, valida `.inf`
+- `driver_manager`: não descarta `.inf` legítimo por header `Microsoft`; regex cobre KX/TASKalfa/ECOSYS/Universal/VersaLink; `resolve_driver` continua para download/inbox quando `.inf` sem nome; `find_inf_by_hardware` filtra por fabricante
+- `driver_download`: cache validado por formato quando sem sha256; timeout 30s + retry 3x + valida Content-Type/tamanho; ZipSlip; threshold score >= 4; UTF-16; propaga progresso/cancelamento
+- `scanner`: hostname `HP*` não classifica mais laptop como impressora; sort tolerante a IP inválido; `check_single_ip` valida IP; checagem de portas de servidor quando sem 9100
+- `network`: `parse_cidrs` com `validate_cidrs` (retorna inválidos); redes `/8-/12` não são mais descartadas silenciosamente
+- `snmp`: trata `NoSuchObject/Instance/EndOfMib`, ignora error-status != 0
+- `usb`: normaliza `Hewlett-Packard->HP`, fallback `USBPRINT*/VID_*`
+- `api.start_test_page`: match exato (evita `192.168.1.5` casar `192.168.1.50`)
+- `config`: escrita atômica + lock; `paths.drivers_dir` com fallback gravável em dev; `instance_mutex` sem vazar handle
+
+### Adicionado (bloco 2 — cancelamento e concorrência)
+- Botão Cancelar + `POST /api/cancel` + `cancel_event` em scan/download/extract/install/remove/resolve
+- `State` com `Lock`; `try_begin/finish`; mutações de `printers/checked` sob lock
+- `test-ip/resolve` bloqueados durante operação; `snapshot` com cache admin/networks (TTL 30s)
+- Remoção de drivers escopada aos drivers selecionados (não mais varredura global)
+- `open_drivers_folder` multiplataforma com erro tratado
+
+### Adicionado (bloco 3 — steampunk, bonecos e música)
+- Tema `steampunk` padrão (latão/couro/rebites, fontes Rye/Special Elite), mantém arcane/cyber/paladin
+- Bonecos CSS puros em `#runner-layer`: 3 ao varrer, 5 ao forjar, celebração no `done`; respeita `prefers-reduced-motion`
+- `SoundFx` chiptune procedural original (sem sample protegido): scanLoop, coin, hammer, fanfarra, game-over; throttle de ticks
+- Acessibilidade: `role=progressbar/checkbox`, `aria-live`, `focus-visible`, teclado Enter/Espaço nos cards
+
 ## [1.0.0] — 2026-11-11
 
 ### Corrigido (revisão pós-instalação em outro PC)
