@@ -41,92 +41,169 @@ async function api(path, body) {
   return data;
 }
 
-/* ------------------------------------------------------------------ WEB AUDIO RPG SYNTHESIZER */
+/* ------------------------------------------------------------------ MUSICA MEDIEVAL (arquivos) */
 const SoundFx = (() => {
-  let ctx = null;
+  // Musica medieval de verdade: arquivos em /static/audio (vendorizados).
+  //   Loops:   "Minstrel Guild", "Lord of the Land", "Celtic Impulse"
+  //   Fanfarra:"The Rule", "Mighty and Meek"   (todos: Kevin MacLeod, CC-BY 3.0)
+  //   Sino:    bronze, dominio publico (PDSounds)
+  // Ver atribuicoes no README. Sorteio sem repeticao em sequencia.
+  const BASE = '/static/audio/';
+  const lastPlay = {};
+  const live = new Set();
+  let loopEl = null;
+  S.wantLoop = false;
 
-  function initCtx() {
-    if (!ctx) {
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (AudioContext) ctx = new AudioContext();
-    }
-    if (ctx && ctx.state === 'suspended') {
-      ctx.resume();
-    }
-    return ctx;
-  }
-
-  function playTone(freq, type = 'sine', duration = 0.1, gainVal = 0.08, rampTo = 0.001) {
+  function oneShot(name, opts) {
+    opts = opts || {};
     if (!S.soundEnabled) return;
+    const now = performance.now();
+    const gap = opts.debounce == null ? 800 : opts.debounce;
+    const key = name + '|' + (opts.rate || 1);
+    if (now - (lastPlay[key] || 0) < gap) return;
+    lastPlay[key] = now;
     try {
-      const c = initCtx();
-      if (!c) return;
-      const osc = c.createOscillator();
-      const gain = c.createGain();
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, c.currentTime);
-      gain.gain.setValueAtTime(gainVal, c.currentTime);
-      gain.gain.exponentialRampToValueAtTime(rampTo, c.currentTime + duration);
-      osc.connect(gain);
-      gain.connect(c.destination);
-      osc.start();
-      osc.stop(c.currentTime + duration);
-    } catch (e) { /* audio policy */ }
+      const el = new Audio(BASE + name);
+      el.volume = opts.vol == null ? 0.6 : opts.vol;
+      if (opts.rate) el.playbackRate = opts.rate;
+      live.add(el);
+      el.onended = () => live.delete(el);
+      const p = el.play();
+      if (p && p.then) {
+        p.then(() => {
+          if (opts.stopAfter) setTimeout(() => {
+            try { el.pause(); } catch (e) {}
+            live.delete(el);
+          }, opts.stopAfter);
+        }).catch(() => { live.delete(el); });
+      }
+    } catch (e) {}
   }
+
+  function stopLoopEl() {
+    try { if (loopEl) loopEl.pause(); } catch (e) {}
+    loopEl = null;
+  }
+
+  // Rádio menestrel: sorteia faixas sem repetir em sequência.
+  //   loops:    minstrel.mp3, lord.mp3, celtic.mp3
+  //   fanfarra: fanfare.mp3, mighty.mp3
+  //   sino:     bell.ogg (cliques + dobrado fúnebre)
+  const POOL = {
+    loop: ['minstrel.mp3', 'lord.mp3', 'celtic.mp3'],
+    fanfare: ['fanfare.mp3', 'mighty.mp3'],
+  };
+  let lastTrack = '';
+  let lastFanfare = '';
+
+  function pick(pool, avoid) {
+    const opts = pool.filter(t => t !== avoid);
+    const arr = opts.length ? opts : pool;
+    return arr[(Math.random() * arr.length) | 0];
+  }
+
+  function playLoopTrack() {
+    stopLoopEl();
+    lastTrack = pick(POOL.loop, lastTrack);
+    try {
+      loopEl = new Audio(BASE + lastTrack);
+      loopEl.volume = 0.42;
+      loopEl.onended = () => { if (S.wantLoop && S.soundEnabled) playLoopTrack(); };
+      const p = loopEl.play();
+      if (p && p.then) p.catch(() => { loopEl = null; });
+    } catch (e) { loopEl = null; }
+  }
+
+  function startLoop() {
+    S.wantLoop = true;
+    if (!S.soundEnabled) return;
+    if (loopEl && !loopEl.paused) return;
+    playLoopTrack();
+  }
+
+  function stopLoop() {
+    S.wantLoop = false;
+    stopLoopEl();
+  }
+
+  function silence() {
+    // Mudo imediato: pausa o loop e tudo que estiver tocando.
+    // Nao mexe em wantLoop (desmutar retoma de onde parou).
+    stopLoopEl();
+    live.forEach((el) => { try { el.pause(); } catch (e) {} });
+    live.clear();
+  }
+
+  function setSoundEnabled(on) {
+    S.soundEnabled = !!on;
+    $('#soundIcon').className = S.soundEnabled ? 'bi bi-volume-up-fill' : 'bi bi-volume-mute-fill';
+    $('#btnSound').classList.toggle('is-active', S.soundEnabled);
+    try { localStorage.setItem('rpg-sound', S.soundEnabled ? '1' : '0'); } catch (e) {}
+    if (!S.soundEnabled) {
+      silence();
+    } else if (S.wantLoop && !loopEl) {
+      startLoop();
+    }
+  }
+
+  // Autoplay: navegador pode bloquear audio fora de gesto; tenta de novo
+  // no proximo clique/tecla se o loop ficou pendente.
+  window.addEventListener('pointerdown', () => { if (S.wantLoop && !loopEl) startLoop(); });
+  window.addEventListener('keydown', () => { if (S.wantLoop && !loopEl) startLoop(); });
 
   return {
+    stopLoop,
+    startLoop,
+    setSoundEnabled,
     click() {
-      playTone(600, 'sine', 0.04, 0.05);
+      oneShot('bell.ogg', { vol: 0.3, rate: 1.35 + Math.random() * 0.35, debounce: 120 });
+    },
+    coin() {
+      oneShot('bell.ogg', { vol: 0.5, rate: 0.95 + Math.random() * 0.15 });
     },
     select(on) {
-      if (on) {
-        playTone(520, 'triangle', 0.07, 0.07);
-        setTimeout(() => playTone(780, 'triangle', 0.09, 0.08), 50);
-      } else {
-        playTone(400, 'sine', 0.06, 0.05);
-      }
+      oneShot('bell.ogg', { vol: 0.45, rate: on ? 1.15 + Math.random() * 0.2 : 0.8 + Math.random() * 0.15, debounce: 150 });
     },
     radar() {
-      if (!S.soundEnabled) return;
-      try {
-        const c = initCtx();
-        if (!c) return;
-        const osc = c.createOscillator();
-        const gain = c.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(300, c.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(880, c.currentTime + 0.35);
-        gain.gain.setValueAtTime(0.08, c.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.38);
-        osc.connect(gain);
-        gain.connect(c.destination);
-        osc.start();
-        osc.stop(c.currentTime + 0.38);
-      } catch (e) {}
-    },
-    found() {
-      if (!S.soundEnabled) return;
-      [523.25, 659.25, 783.99, 1046.50].forEach((freq, idx) => {
-        setTimeout(() => playTone(freq, 'triangle', 0.12, 0.06), idx * 70);
-      });
+      startLoop();
     },
     forge() {
-      if (!S.soundEnabled) return;
-      playTone(180, 'sawtooth', 0.25, 0.09, 0.01);
-      setTimeout(() => playTone(360, 'sine', 0.3, 0.08, 0.005), 80);
+      startLoop();
+    },
+    scanLoop() {
+      startLoop();
+    },
+    found() {
+      oneShot('bell.ogg', { vol: 0.5, rate: 1.25 + Math.random() * 0.25, debounce: 1500 });
+      this.coin();
+    },
+    fanfare() {
+      stopLoopEl();
+      lastFanfare = pick(POOL.fanfare, lastFanfare);
+      oneShot(lastFanfare, { vol: 0.8, debounce: 2500, stopAfter: 12000 });
+    },
+    gameOver() {
+      // Dobrado funebre: 2-3 badaladas graves, ritmo irregular.
+      stopLoopEl();
+      const n = 2 + ((Math.random() * 2) | 0);
+      const base = 0.42 + Math.random() * 0.18;
+      let t = 0;
+      for (let k = 0; k < n; k++) {
+        const rate = base - k * 0.05;
+        const vol = 0.7 - k * 0.05;
+        setTimeout(() => oneShot('bell.ogg', { vol, rate, debounce: 0 }), t);
+        t += 800 + Math.random() * 450;
+      }
     },
     victory() {
-      if (!S.soundEnabled) return;
-      const notes = [440, 554.37, 659.25, 880];
-      notes.forEach((f, i) => {
-        setTimeout(() => playTone(f, 'triangle', 0.28, 0.09), i * 90);
-      });
+      try { this.fanfare(); } catch (e) {}
     },
     error() {
-      playTone(150, 'sawtooth', 0.2, 0.08);
+      try { this.gameOver(); } catch (e) {}
     }
   };
 })();
+
 
 /* ------------------------------------------------------------------ TOASTS */
 function toast(kind, title, message) {
@@ -167,6 +244,7 @@ function toast(kind, title, message) {
 
   if (kind === 'danger') SoundFx.error();
   else if (kind === 'success') SoundFx.victory();
+  else if (kind === 'info') SoundFx.coin();
 }
 
 /* ------------------------------------------------------------------ RARITY & BADGES */
@@ -212,6 +290,7 @@ function getVendorIcon(vendor) {
 
 /* ------------------------------------------------------------------ THEME & SOUND */
 function applyTheme(theme) {
+  if (theme === 'steampunk' || theme === 'arcane' || theme === 'cyber') theme = 'industrial'; // temas removidos: virou Oficina
   document.documentElement.setAttribute('data-rpg-theme', theme);
   const bsTheme = theme === 'paladin' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-bs-theme', bsTheme);
@@ -231,10 +310,7 @@ $$('.theme-dropdown .dropdown-item').forEach((btn) => {
 });
 
 $('#btnSound').addEventListener('click', () => {
-  S.soundEnabled = !S.soundEnabled;
-  $('#soundIcon').className = S.soundEnabled ? 'bi bi-volume-up-fill' : 'bi bi-volume-mute-fill';
-  $('#btnSound').classList.toggle('is-active', S.soundEnabled);
-  try { localStorage.setItem('rpg-sound', S.soundEnabled ? '1' : '0'); } catch (e) {}
+  SoundFx.setSoundEnabled(!S.soundEnabled);
   if (S.soundEnabled) SoundFx.click();
 });
 
@@ -275,6 +351,8 @@ function setStatus(text, pct) {
   if (typeof pct === 'number') {
     $('#statusPct').textContent = pct + '%';
     $('#progressBar').style.width = pct + '%';
+    const track = $('#progressTrack');
+    if (track) track.setAttribute('aria-valuenow', String(pct));
   }
 }
 
@@ -290,6 +368,8 @@ function setBusy(busy) {
     const el = $(s);
     if (el) el.disabled = !!busy;
   });
+  const cancelBtn = $('#btnCancel');
+  if (cancelBtn) cancelBtn.hidden = !busy;
 
   const scanIcon = $('#scanBtnIcon');
   if (scanIcon) {
@@ -303,9 +383,11 @@ function setBusy(busy) {
   if (busy === 'scan') {
     updateQuestStepper(1);
     SoundFx.radar();
-  } else if (busy === 'install') {
+  } else if (busy === 'install' || busy === 'remove' || busy === 'resolve') {
     updateQuestStepper(3);
     SoundFx.forge();
+  } else if (!busy) {
+    SoundFx.stopLoop();
   }
 }
 
@@ -382,6 +464,10 @@ function renderList() {
       const card = document.createElement('div');
       card.className = `rpg-card-item rarity-${rarityKey} ${isChecked ? 'is-selected' : ''} ${isSelected ? 'is-active' : ''}`;
       card.dataset.uid = uid;
+      card.tabIndex = 0;
+      card.setAttribute('role', 'checkbox');
+      card.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+      card.setAttribute('aria-label', modelDisplay);
       card.innerHTML = `
         <div class="card-top">
           <div class="card-identity">
@@ -432,6 +518,10 @@ function renderList() {
       const row = document.createElement('div');
       row.className = `rpg-table-row rarity-${rarityKey} ${isChecked ? 'is-selected' : ''} ${isSelected ? 'is-active' : ''}`;
       row.dataset.uid = uid;
+      row.tabIndex = 0;
+      row.setAttribute('role', 'checkbox');
+      row.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+      row.setAttribute('aria-label', modelDisplay);
       row.innerHTML = `
         <div class="tbl-cell-check">
           <input class="form-check-input rpg-checkbox pr-check" type="checkbox" ${isChecked ? 'checked' : ''}>
@@ -500,6 +590,13 @@ function updateSummary() {
 }
 
 /* ------------------------------------------------------------------ LIST INTERACTIONS */
+$('#printerRows').addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter' && ev.key !== ' ') return;
+  const item = ev.target.closest('.rpg-card-item, .rpg-table-row');
+  if (!item) return;
+  ev.preventDefault();
+  item.click();
+});
 $('#printerRows').addEventListener('click', (ev) => {
   const item = ev.target.closest('.rpg-card-item, .rpg-table-row');
   if (!item) return;
@@ -681,6 +778,17 @@ $('#btnScan').addEventListener('click', async () => {
     toast('info', 'Exploração Iniciada', 'Sondando sub-redes e portas USB em busca de artefatos...');
   } catch (e) {
     toast('danger', 'Falha ao Iniciar Varredura', e.message);
+  }
+});
+
+$('#btnCancel').addEventListener('click', async () => {
+  SoundFx.click();
+  try {
+    await api('/api/cancel', {});
+    toast('warning', 'Cancelamento', 'Operação cancelada. Parando a música...');
+    SoundFx.stopLoop();
+  } catch (e) {
+    toast('danger', 'Falha ao cancelar', e.message);
   }
 });
 
@@ -893,12 +1001,16 @@ function handleEvent(type, data) {
       if (data.action === 'install') {
         if (data.fail) {
           toast('danger', 'Forja Parcial', `${data.ok} instalada(s), ${data.fail} falha(s). Verifique o log.`);
+          SoundFx.stopLoop();
+          SoundFx.gameOver();
         } else {
           toast('success', 'Grande Vitória!', `${data.ok} impressora(s) forjada(s) e instaladas com sucesso!`);
+          SoundFx.stopLoop();
           SoundFx.victory();
         }
       } else if (data.action === 'remove') {
         toast('success', 'Expurgamento Concluído', `${data.ok} impressora(s) removida(s).`);
+        SoundFx.stopLoop();
       }
       break;
   }
@@ -923,9 +1035,7 @@ function connectEvents() {
 (async function init() {
   // Sound preference
   try {
-    S.soundEnabled = localStorage.getItem('rpg-sound') !== '0';
-    $('#soundIcon').className = S.soundEnabled ? 'bi bi-volume-up-fill' : 'bi bi-volume-mute-fill';
-    $('#btnSound').classList.toggle('is-active', S.soundEnabled);
+    SoundFx.setSoundEnabled(localStorage.getItem('rpg-sound') !== '0');
   } catch (e) {}
 
   // View mode preference
@@ -938,10 +1048,10 @@ function connectEvents() {
 
   // Theme preference
   try {
-    const savedTheme = localStorage.getItem('rpg-theme') || 'arcane';
+    const savedTheme = localStorage.getItem('rpg-theme') || 'industrial';
     applyTheme(savedTheme);
   } catch (e) {
-    applyTheme('arcane');
+    applyTheme('industrial');
   }
 
   // Fetch initial state

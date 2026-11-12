@@ -1,12 +1,12 @@
 /* =====================================================================
    FORJA DE IMPRESSORAS — RPG / GAMER THEME SYSTEM
-   Arcane Noturno • Cyber-Masmorra • Paladino Real
+   Paladino Real • Oficina Industrial
    ===================================================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;500;600&family=Oswald:wght@500;600;700&display=swap');
 
 /* ------------------------------------------------------------------ THEMES */
-:root, [data-rpg-theme="arcane"] {
+:root {
   --rpg-bg:            #070b14;
   --rpg-bg-alt:        #0c1222;
   --rpg-surface:       #11182c;
@@ -37,30 +37,35 @@
   --rpg-font-mono:     "Fira Code", "Cascadia Code", Consolas, monospace;
 }
 
-[data-rpg-theme="cyber"] {
-  --rpg-bg:            #030712;
-  --rpg-bg-alt:        #080e21;
-  --rpg-surface:       #0d1527;
-  --rpg-surface-hover: #13203c;
-  --rpg-surface-inset: #050a16;
-  --rpg-border:        #193254;
-  --rpg-border-focus:  #00f5ff;
-  
-  --rpg-text:          #f0fdf4;
-  --rpg-text-muted:    #7ca3cc;
-  --rpg-text-dark:     #3f5e82;
+[data-rpg-theme="industrial"] {
+  --rpg-bg:            #141415;
+  --rpg-bg-alt:        #1b1b1e;
+  --rpg-surface:       #232327;
+  --rpg-surface-hover: #2d2d33;
+  --rpg-surface-inset: #0e0e10;
+  --rpg-border:        #3c3c44;
+  --rpg-border-focus:  #ff6b00;
 
-  --rpg-accent:        #00f5ff;
-  --rpg-accent-dark:   #0891b2;
-  --rpg-accent-glow:   rgba(0, 245, 255, 0.45);
+  --rpg-text:          #f2f2f0;
+  --rpg-text-muted:    #a9a9a4;
+  --rpg-text-dark:     #6d6d68;
 
-  --rpg-gold:          #facc15;
-  --rpg-gold-glow:     rgba(250, 204, 21, 0.45);
-  
-  --rpg-mana:          #38bdf8;
-  --rpg-stamina:       #22c55e;
-  --rpg-health:        #f43f5e;
-  --rpg-amber:         #f59e0b;
+  --rpg-accent:        #ff6b00;
+  --rpg-accent-dark:   #b34a00;
+  --rpg-accent-glow:   rgba(255, 107, 0, 0.45);
+
+  --rpg-gold:          #ffc400;
+  --rpg-gold-glow:     rgba(255, 196, 0, 0.4);
+
+  --rpg-mana:          #35c4b5;
+  --rpg-stamina:       #7ac74f;
+  --rpg-health:        #e5484d;
+  --rpg-amber:         #ffc400;
+
+  --rpg-card-glow:     0 0 20px rgba(0, 0, 0, 0.6);
+  --rpg-font-display:  "Oswald", "Rajdhani", "Segoe UI", sans-serif;
+  --rpg-font-ui:       "Rajdhani", "Segoe UI Variable Text", system-ui, sans-serif;
+  --rpg-font-mono:     "Fira Code", "Cascadia Code", Consolas, monospace;
 }
 
 [data-rpg-theme="paladin"] {
@@ -294,9 +299,64 @@ html, body {
   border-radius: 50%;
   display: inline-block;
 }
-.dot-arcane { background: #8b5cf6; box-shadow: 0 0 6px #8b5cf6; }
-.dot-cyber  { background: #00f5ff; box-shadow: 0 0 6px #00f5ff; }
 .dot-paladin{ background: #d97706; box-shadow: 0 0 6px #d97706; }
+.dot-industrial { background: linear-gradient(135deg, #ff6b00, #ffc400); box-shadow: 0 0 6px #ff6b00; }
+
+/* Industrial: chapa metalica + faixa de seguranca */
+[data-rpg-theme="industrial"] .rpg-body,
+[data-rpg-theme="industrial"].rpg-body {
+  background-image:
+    radial-gradient(circle at 20% 0%, rgba(255,107,0,.07) 0, transparent 45%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.015) 0 1px, transparent 1px 4px);
+}
+[data-rpg-theme="industrial"] .rpg-topbar {
+  border-bottom: 3px solid var(--rpg-border);
+  background: linear-gradient(180deg, #26262b, #1b1b1e);
+}
+[data-rpg-theme="industrial"] .rpg-topbar::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -3px;
+  height: 3px;
+  background: repeating-linear-gradient(-45deg, #ffc400 0 12px, #141415 12px 24px);
+}
+[data-rpg-theme="industrial"] .guild-crest {
+  background: linear-gradient(135deg, #3a3a40, #1b1b1e);
+  border: 2px solid var(--rpg-accent);
+  border-radius: 8px;
+  box-shadow: 0 0 12px var(--rpg-accent-glow), inset 0 0 6px rgba(0,0,0,.6);
+}
+[data-rpg-theme="industrial"] .guild-crest .crest-icon {
+  color: var(--rpg-accent);
+}
+[data-rpg-theme="industrial"] .rpg-btn-hero {
+  background: linear-gradient(180deg, #ff8c2e, #e05a00);
+  border: 1px solid #7a3a00;
+  color: #141415;
+  text-shadow: none;
+  box-shadow: 0 0 14px var(--rpg-accent-glow), inset 0 1px 0 rgba(255,255,255,.45);
+}
+[data-rpg-theme="industrial"] .rpg-bar-fill {
+  background: linear-gradient(90deg, #b34a00, #ff6b00);
+}
+
+/* Foco visivel (acessibilidade) */
+.rpg-btn:focus-visible, .rpg-btn-sm:focus-visible, .rpg-btn-icon:focus-visible,
+.rpg-btn-icon-sm:focus-visible, .pill-btn:focus-visible, .rpg-link-btn:focus-visible,
+.pr-check:focus-visible, .rpg-input:focus-visible {
+  outline: 3px solid var(--rpg-gold);
+  outline-offset: 2px;
+}
+.rpg-card-item:focus-visible, .rpg-table-row:focus-visible {
+  outline: 3px solid var(--rpg-gold);
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-shine, .crest-sparkle, .rune-pulse, .spin-anim {
+    animation: none !important;
+  }
+}
 
 .rpg-dropdown-menu {
   background: var(--rpg-surface);

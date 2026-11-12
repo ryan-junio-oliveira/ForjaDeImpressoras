@@ -62,6 +62,10 @@ class State:
         self.printers = []
         self.checked = set()
         self.busy = None
+        self.lock = threading.Lock()
+        self.cancel_event = threading.Event()
+        self._admin_cache = (0, False)
+        self._net_cache = (0, [])
         try:
             from app.data import config as _cfg
             self.auto_download = bool(_cfg.get("auto_download", True))
@@ -69,6 +73,21 @@ class State:
             self.auto_download = True
         self.last_error = None
         self._load_last_scan()
+
+    def try_begin(self, op):
+        with self.lock:
+            if self.busy:
+                return False
+            self.busy = op
+            self.cancel_event.clear()
+            return True
+
+    def finish(self):
+        with self.lock:
+            self.busy = None
+
+    def is_cancelled(self):
+        return self.cancel_event.is_set()
 
     def _load_last_scan(self):
         scan_file = paths.scan_result_path()
@@ -185,6 +204,23 @@ def publish_busy():
     STATE.bus.publish("busy", {"busy": STATE.busy})
 
 
+def replay_snapshot():
+    """Historico pronto para replay em nova conexao SSE.
+
+    `done` e notificacao unica: repetir para quem conecta depois tocava
+    fanfarra/toast fantasma sem acao do usuario. `busy` so vale o estado
+    atual (intermediarios disparam o radar/musica a toa no replay).
+    """
+    hist = STATE.bus.snapshot()
+    last_busy = None
+    for m in hist:
+        if m.get("type") == "busy":
+            last_busy = m
+    return [m for m in hist
+            if m.get("type") != "done"
+            and not (m.get("type") == "busy" and m is not last_busy)]
+
+
 def find_printer(ip):
     for p in STATE.printers:
         if (p.get("uid") or p.get("ip")) == ip:
@@ -268,14 +304,37 @@ def is_admin():
 
 
 def snapshot():
+    import time as _t
+    now = _t.monotonic()
+    with STATE.lock:
+        printers = list(STATE.printers)
+        checked = set(STATE.checked)
+        busy = STATE.busy
+    # cache admin/networks por 30s: evita spawn de ipconfig/PowerShell a cada poll
+    admin_age, admin_val = STATE._admin_cache
+    net_age, net_val = STATE._net_cache
+    if now - admin_age > 30:
+        admin_val = is_admin()
+        STATE._admin_cache = (now, admin_val)
+    if now - net_age > 30 or not net_val:
+        try:
+            net_val = local_networks()
+        except Exception:
+            net_val = []
+        STATE._net_cache = (now, net_val)
     return {
-        "printers": [_public(p) for p in STATE.printers],
-        "checked": sorted(STATE.checked),
-        "busy": STATE.busy,
-        "admin": is_admin(),
+        "printers": [_public(p) for p in printers],
+        "checked": sorted(checked),
+        "busy": busy,
+        "admin": admin_val,
         "auto_download": STATE.auto_download,
-        "networks": local_networks(),
+        "networks": net_val,
     }
+
+
+def cancel_operation():
+    STATE.cancel_event.set()
+    return {"ok": True, "busy": STATE.busy}
 
 
 def set_auto_download(value: bool):
@@ -293,9 +352,18 @@ def set_auto_download(value: bool):
 # ACOES
 # --------------------------------------------------------------------------
 def start_scan(cidrs=None):
-    if STATE.busy:
+    # valida CIDRs: typo nao pode virar "varre tudo" silencioso
+    if isinstance(cidrs, str) and cidrs.strip():
+        try:
+            from app.core.network import validate_cidrs as _vc
+            valid, invalid = _vc(cidrs)
+            if invalid:
+                return {"ok": False, "error": f"CIDR invalido: {', '.join(invalid)}"}
+            cidrs = valid or None
+        except Exception:
+            pass
+    if not STATE.try_begin("scan"):
         return {"ok": False, "error": "Já existe uma operação em andamento."}
-    STATE.busy = "scan"
     publish_busy()
     threading.Thread(target=_scan_worker, args=(cidrs,), daemon=True).start()
     return {"ok": True}
@@ -306,10 +374,18 @@ def _scan_worker(cidrs):
     log(f"Varrendo {alvo} ...", "hl")
 
     def cb(a, t, m):
+        if STATE.is_cancelled():
+            raise InterruptedError("cancelado")
         status(m, a, t)
 
     try:
-        printers = scanner.scan_network(cidrs=cidrs or None, progress_cb=cb)
+        printers = scanner.scan_network(cidrs=cidrs or None, progress_cb=cb,
+                                        cancel_event=STATE.cancel_event)
+    except InterruptedError:
+        log("Varredura cancelada pelo usuario.", "warn")
+        STATE.finish()
+        publish_busy()
+        return
     except Exception as e:
         log(f"ERRO no scan: {e}", "err")
         printers = []
@@ -335,20 +411,31 @@ def _scan_worker(cidrs):
     except Exception:
         pass
 
-    STATE.printers = printers
-    STATE.checked = {(p.get("uid") or p.get("ip")) for p in printers}
+    with STATE.lock:
+        STATE.printers = printers
+        STATE.checked = {(p.get("uid") or p.get("ip")) for p in printers}
     publish_printers()
 
+    if STATE.is_cancelled():
+        log("Varredura cancelada pelo usuario.", "warn")
+        STATE.finish()
+        publish_busy()
+        return
     if not printers:
         log("Nenhuma impressora encontrada.", "warn")
         status("Nenhuma impressora encontrada. Verifique rede/VLAN e SNMP.", 1, 1)
-        STATE.busy = None
+        STATE.finish()
         publish_busy()
         return
 
     log(f"Encontradas {len(printers)} impressora(s). Resolvendo drivers PCL...", "hl")
     status("Resolvendo drivers PCL específicos...", 0, len(printers))
     for i, p in enumerate(printers):
+        if STATE.is_cancelled():
+            log("Varredura cancelada pelo usuario.", "warn")
+            STATE.finish()
+            publish_busy()
+            return
         rotulo = p.get("ip") or p.get("modelo_canonico") or p.get("modelo", "")
         if p.get("conexao") == "usb":
             # USB ja chega com o driver resolvido por HardwareID — nao
@@ -371,6 +458,11 @@ def _scan_worker(cidrs):
         publish_printer(p)
         status(f"Resolvendo drivers ({i + 1}/{len(printers)})", i + 1, len(printers))
 
+    if STATE.is_cancelled():
+        log("Varredura cancelada pelo usuario.", "warn")
+        STATE.finish()
+        publish_busy()
+        return
     status(f"{len(printers)} impressora(s) pronta(s). Marque as desejadas e clique em Instalar.",
            1, 1)
     # Salva DE NOVO apos a resolucao: o arquivo passa a conter o _drv e a
@@ -380,14 +472,21 @@ def _scan_worker(cidrs):
             json.dumps(printers, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
-    STATE.busy = None
+    STATE.finish()
     publish_busy()
 
 
 def start_test_ip(ip):
+    import ipaddress as _ip
     ip = (ip or "").strip()
     if not ip:
         return {"ok": False, "error": "Informe um IP."}
+    try:
+        _ip.ip_address(ip)
+    except Exception:
+        return {"ok": False, "error": f"IP invalido: {ip}"}
+    if STATE.busy in ("scan", "install", "remove"):
+        return {"ok": False, "error": "Aguarde a operacao em andamento ou cancele."}
 
     def worker():
         log(f"Testando IP manual {ip} ...", "hl")
@@ -404,9 +503,10 @@ def start_test_ip(ip):
             f"{r.get('modelo_canonico') or r['modelo']}", "ok")
         r.setdefault("uid", r.get("ip", ip))
         r.setdefault("conexao", "rede")
-        if not find_printer(ip):
-            STATE.printers.append(r)
-            STATE.checked.add(r.get("uid") or r.get("ip"))
+        with STATE.lock:
+            if not find_printer(ip):
+                STATE.printers.append(r)
+                STATE.checked.add(r.get("uid") or r.get("ip"))
         try:
             info = driver_manager.resolve_driver(
                 r["fabricante"], r["modelo"], r.get("modelo_canonico"),
@@ -414,7 +514,8 @@ def start_test_ip(ip):
         except Exception as e:
             info = {"origem": "pendente", "driver_name": None,
                     "detalhe": str(e), "inf": None}
-        r["_drv"] = info
+        with STATE.lock:
+            r["_drv"] = info
         publish_printers()
         publish_printer(r)
         status(f"{ip} adicionada a lista.", 1, 1)
@@ -426,37 +527,49 @@ def start_test_ip(ip):
 def start_resolve():
     if not STATE.printers:
         return {"ok": False, "error": "Rode uma varredura antes."}
+    if not STATE.try_begin("resolve"):
+        return {"ok": False, "error": "Ja existe uma operacao em andamento."}
+    publish_busy()
 
     def worker():
         log("Re-resolvendo drivers PCL...", "hl")
-        for i, p in enumerate(STATE.printers):
-            if p.get("conexao") == "usb":
-                try:
-                    info = driver_manager.resolve_usb_driver(
-                        {"nome": p.get("modelo_canonico") or p.get("modelo", ""),
-                         "device_id": p.get("usb_device_id"),
-                         "hardware_ids": p.get("usb_hardware_ids"),
-                         "fabricante": p.get("fabricante"),
-                         "modelo": p.get("modelo_canonico") or p.get("modelo", ""),
-                         "fila": {}},
-                        allow_download=STATE.auto_download, log=log)
-                except Exception as e:
-                    info = {"origem": "pendente", "driver_name": None,
-                            "detalhe": str(e), "inf": None}
-            else:
-                try:
-                    info = driver_manager.resolve_driver(
-                        p["fabricante"], p["modelo"], p.get("modelo_canonico"),
-                        allow_download=STATE.auto_download, log=log)
-                except Exception as e:
-                    info = {"origem": "pendente", "driver_name": None,
-                            "detalhe": str(e), "inf": None}
-            p["_drv"] = info
-            publish_printer(p)
-            status(f"Re-resolvendo ({i + 1}/{len(STATE.printers)})",
-                   i + 1, len(STATE.printers))
-        publish_printers()
-        status("Drivers re-resolvidos.", 1, 1)
+        try:
+            for i, p in enumerate(list(STATE.printers)):
+                if STATE.is_cancelled():
+                    log("Re-resolucao cancelada.", "warn")
+                    break
+                if p.get("conexao") == "usb":
+                    try:
+                        info = driver_manager.resolve_usb_driver(
+                            {"nome": p.get("modelo_canonico") or p.get("modelo", ""),
+                             "device_id": p.get("usb_device_id"),
+                             "hardware_ids": p.get("usb_hardware_ids"),
+                             "fabricante": p.get("fabricante"),
+                             "modelo": p.get("modelo_canonico") or p.get("modelo", ""),
+                             "fila": {}},
+                            allow_download=STATE.auto_download, log=log)
+                    except Exception as e:
+                        info = {"origem": "pendente", "driver_name": None,
+                                "detalhe": str(e), "inf": None}
+                else:
+                    try:
+                        info = driver_manager.resolve_driver(
+                            p["fabricante"], p["modelo"], p.get("modelo_canonico"),
+                            allow_download=STATE.auto_download, log=log)
+                    except Exception as e:
+                        info = {"origem": "pendente", "driver_name": None,
+                                "detalhe": str(e), "inf": None}
+                with STATE.lock:
+                    p["_drv"] = info
+                publish_printer(p)
+                status(f"Re-resolvendo ({i + 1}/{len(STATE.printers)})",
+                       i + 1, len(STATE.printers))
+            publish_printers()
+            if not STATE.is_cancelled():
+                status("Drivers re-resolvidos.", 1, 1)
+        finally:
+            STATE.finish()
+            publish_busy()
 
     threading.Thread(target=worker, daemon=True).start()
     return {"ok": True}
@@ -467,9 +580,8 @@ def start_install(uids):
         return {"ok": False, "error": "Nenhuma impressora marcada."}
     if not is_admin():
         return {"ok": False, "error": "Sem Administrador: use run.bat para elevar."}
-    if STATE.busy:
+    if not STATE.try_begin("install"):
         return {"ok": False, "error": "Já existe uma operação em andamento."}
-    STATE.busy = "install"
     publish_busy()
     threading.Thread(target=_install_worker, args=(list(uids),), daemon=True).start()
     return {"ok": True}
@@ -478,79 +590,90 @@ def start_install(uids):
 def _install_worker(uids):
     oks, fails = 0, []
     total = len(uids)
-    for i, uid in enumerate(uids):
-        p = find_printer(uid)
-        if not p:
-            continue
-        canon = p.get("modelo_canonico") or p["modelo"]
-        info = p.get("_drv") or {}
-        if not info.get("driver_name"):
-            try:
-                if p.get("conexao") == "usb":
-                    info = driver_manager.resolve_usb_driver(
-                        {"nome": canon, "device_id": p.get("usb_device_id"),
-                         "hardware_ids": p.get("usb_hardware_ids"),
-                         "fabricante": p.get("fabricante"), "modelo": canon},
-                        allow_download=STATE.auto_download, log=log)
+    try:
+        for i, uid in enumerate(uids):
+            if STATE.is_cancelled():
+                log("Instalacao cancelada pelo usuario.", "warn")
+                break
+            with STATE.lock:
+                p = find_printer(uid)
+            if not p:
+                continue
+            canon = p.get("modelo_canonico") or p["modelo"]
+            info = p.get("_drv") or {}
+            if not info.get("driver_name"):
+                try:
+                    if p.get("conexao") == "usb":
+                        info = driver_manager.resolve_usb_driver(
+                            {"nome": canon, "device_id": p.get("usb_device_id"),
+                             "hardware_ids": p.get("usb_hardware_ids"),
+                             "fabricante": p.get("fabricante"), "modelo": canon},
+                            allow_download=STATE.auto_download, log=log)
+                    else:
+                        info = driver_manager.resolve_driver(
+                            p["fabricante"], p["modelo"], canon,
+                            allow_download=STATE.auto_download, log=log)
+                    with STATE.lock:
+                        p["_drv"] = info
+                except Exception as e:
+                    info = {"origem": "pendente", "driver_name": None,
+                            "detalhe": str(e), "inf": None}
+            drv = info.get("driver_name")
+            inf = info.get("inf")
+            usb = p.get("conexao") == "usb"
+            rotulo = p.get("ip") or canon
+            log("")
+            log(f"=== {rotulo}  {canon} ===", "hl")
+            status(f"Instalando {rotulo} ({i + 1}/{total})", i, total)
+            if info.get("origem") == "pendente" or not drv:
+                log("PULADA: " + (info.get("detalhe") or ""), "err")
+                fails.append(uid)
+                continue
+            if driver_manager.is_generic_name(drv):
+                log(f"BLOQUEADA (generico): {drv}", "err")
+                fails.append(uid)
+                continue
+            if usb:
+                ok, msgs = printer_install.install_usb_printer(
+                    f"{canon} (USB)", drv, inf_path=inf,
+                    log=lambda m: log("  " + m))
+            else:
+                portas = p.get("portas", [])
+                if 9100 in portas:
+                    porta = 9100
+                elif 515 in portas:
+                    porta = 515
+                elif 631 in portas:
+                    porta = 9100
+                    log("AVISO: impressora so anuncia IPP (631); usando porta RAW 9100 como tentativa.", "warn")
                 else:
-                    info = driver_manager.resolve_driver(
-                        p["fabricante"], p["modelo"], canon,
-                        allow_download=STATE.auto_download, log=log)
-                p["_drv"] = info
-            except Exception as e:
-                info = {"origem": "pendente", "driver_name": None,
-                        "detalhe": str(e), "inf": None}
-        drv = info.get("driver_name")
-        inf = info.get("inf")
-        usb = p.get("conexao") == "usb"
-        rotulo = p.get("ip") or canon
-        log("")
-        log(f"=== {rotulo}  {canon} ===", "hl")
-        status(f"Instalando {rotulo} ({i + 1}/{total})", i, total)
-
-        if info.get("origem") == "pendente" or not drv:
-            log("PULADA: " + (info.get("detalhe") or ""), "err")
-            fails.append(uid)
-            continue
-        if driver_manager.is_generic_name(drv):
-            log(f"BLOQUEADA (generico): {drv}", "err")
-            fails.append(uid)
-            continue
-
-        if usb:
-            ok, msgs = printer_install.install_usb_printer(
-                f"{canon} (USB)", drv, inf_path=inf,
-                log=lambda m: log("  " + m))
-        else:
-            portas = p.get("portas", [])
-            porta = 9100 if 9100 in portas else (515 if 515 in portas else 9100)
-            ok, msgs = printer_install.full_install(
-                p["ip"], p["fabricante"], canon, drv, inf_path=inf,
-                log=lambda m: log("  " + m))
-        try:
-            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            arquivo = (p.get("ip") or "usb").replace(".", "_").replace(":", "_")
-            paths.install_log_path(f"{arquivo}_{stamp}").write_text(
-                f"Conexao: {'USB' if usb else 'Rede'}\n"
-                f"IP: {p.get('ip') or '-'}\nModelo: {canon}\n"
-                f"Driver [{info.get('origem')}]: {drv}\nINF: {inf}\n\n{msgs}",
-                encoding="utf-8")
-        except Exception:
-            pass
-        if ok:
-            oks += 1
-        else:
-            fails.append(uid)
-
-    resumo = f"Concluido: {oks} instalada(s), {len(fails)} falha(s)"
-    if fails:
-        resumo += " (" + ", ".join(fails) + ")"
-    log(resumo, "ok" if not fails else "err")
-    if fails:
-        log("Veja o arquivo instalacao_<IP>_<data>.log na pasta do app.", "warn")
-    status(resumo, 1, 1)
-    STATE.busy = None
-    publish_busy()
+                    porta = 9100
+                ok, msgs = printer_install.full_install(
+                    p["ip"], p["fabricante"], canon, drv, inf_path=inf,
+                    port_number=porta,
+                    log=lambda m: log("  " + m))
+            try:
+                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                arquivo = (p.get("ip") or "usb").replace(".", "_").replace(":", "_")
+                paths.install_log_path(f"{arquivo}_{stamp}").write_text(
+                    "Conexao: " + ("USB" if usb else "Rede") + chr(10) + "IP: " + (p.get("ip") or "-") + chr(10) + "Modelo: " + canon + chr(10) + "Driver [" + str(info.get("origem")) + "]: " + str(drv) + chr(10) + "INF: " + str(inf) + chr(10) + chr(10) + msgs,
+                    encoding="utf-8")
+            except Exception:
+                pass
+            if ok:
+                oks += 1
+            else:
+                fails.append(uid)
+        resumo = f"Concluido: {oks} instalada(s), {len(fails)} falha(s)"
+        if fails:
+            resumo += " (" + ", ".join(fails) + ")"
+        log(resumo, "ok" if not fails else "err")
+        if fails:
+            log("Veja o arquivo instalacao_<IP>_<data>.log na pasta do app.", "warn")
+        status(resumo if not STATE.is_cancelled() else "Instalacao cancelada.", 1, 1)
+    finally:
+        STATE.finish()
+        publish_busy()
     STATE.bus.publish("done", {"action": "install", "ok": oks, "fail": len(fails)})
 
 
@@ -572,7 +695,7 @@ def start_test_page(uids):
             _code, lst = printer_install.run_ps(
                 "Get-Printer | Select-Object -ExpandProperty Name")
             candidates = [c.strip() for c in (lst or "").splitlines() if c.strip()]
-            target = next((c for c in candidates if ip and ip in c),
+            target = next((c for c in candidates if c == guess or (ip and (c == ip or f"({ip})" in c))),
                           guess if guess in candidates else None)
             if not target:
                 log(f"{ip or p.get('modelo')}: impressora ainda nao instalada. "
@@ -590,8 +713,16 @@ def start_test_page(uids):
 def open_drivers_folder():
     """Abre a pasta de drivers no Explorer (sem janela de console)."""
     import os
+    import sys
     d = paths.drivers_dir()
-    os.startfile(str(d))
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(d))
+        else:
+            import subprocess as _sp
+            _sp.Popen(["xdg-open", str(d)])
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
     return {"ok": True}
 
 
@@ -616,9 +747,8 @@ def list_installed():
 def start_remove(names, keep_virtual=True, remove_ports=True, remove_drivers=False):
     if not names:
         return {"ok": False, "error": "Nada selecionado."}
-    if STATE.busy:
+    if not STATE.try_begin("remove"):
         return {"ok": False, "error": "Já existe uma operação em andamento."}
-    STATE.busy = "remove"
     publish_busy()
     threading.Thread(target=_remove_worker,
                      args=(list(names), bool(keep_virtual), bool(remove_ports),
@@ -627,54 +757,67 @@ def start_remove(names, keep_virtual=True, remove_ports=True, remove_drivers=Fal
 
 
 def _remove_worker(names, keep_virtual, remove_ports, remove_drivers):
-    installed = {p["name"]: p for p in list_installed()}
-    targets = []
-    for n in names:
-        info = installed.get(n)
-        if info is None:
-            continue
-        if keep_virtual and info["virtual"]:
-            log(f"Preservada (virtual): {n}", "warn")
-            continue
-        targets.append(info)
-
-    if not targets:
-        log("Nada a remover.", "warn")
-        status("Nada a remover.", 1, 1)
-        STATE.busy = None
-        publish_busy()
-        return
-
     ok_n = 0
-    used_ports = {t["port"] for t in targets if t.get("port")}
-    for i, t in enumerate(targets):
-        status(f"Removendo {t['name']} ({i + 1}/{len(targets)})", i, len(targets))
-        ok, _ = printer_install.remove_printer(t["name"])
-        log(f"{'Removida' if ok else 'FALHOU'}: {t['name']}", "ok" if ok else "err")
-        ok_n += 1 if ok else 0
-
     ports_rm = 0
-    if remove_ports:
-        remaining = {p["port"] for p in list_installed() if p.get("port")}
-        for port in sorted(used_ports):
-            if not port or port in remaining:
+    targets = []
+    try:
+        if STATE.is_cancelled():
+            log("Remocao cancelada.", "warn")
+            return
+        installed = {p["name"]: p for p in list_installed()}
+        for n in names:
+            info = installed.get(n)
+            if info is None:
                 continue
-            if not printer_install.is_removable_port(port):
-                log(f"Porta preservada (sistema): {port}", "warn")
+            if keep_virtual and info["virtual"]:
+                log(f"Preservada (virtual): {n}", "warn")
                 continue
-            ok, _ = printer_install.remove_printer_port(port)
-            log(f"{'Porta removida' if ok else 'Porta mantida'}: {port}",
-                "ok" if ok else "warn")
-            ports_rm += 1 if ok else 0
-
-    if remove_drivers:
-        _ok, summary = printer_install.remove_all_printers(
-            keep_virtual=True, remove_ports=False, remove_drivers=True)
-        for line in summary.splitlines():
-            log(line)
-
-    log(f"Resumo: {ok_n} impressora(s) removida(s), {ports_rm} porta(s).", "ok")
-    status(f"Remocao: {ok_n}/{len(targets)} impressoras, {ports_rm} portas.", 1, 1)
-    STATE.busy = None
-    publish_busy()
+            targets.append(info)
+        if not targets:
+            log("Nada a remover.", "warn")
+            status("Nada a remover.", 1, 1)
+            return
+        used_ports = {tt["port"] for tt in targets if tt.get("port")}
+        target_drivers = {tt.get("driver") for tt in targets if tt.get("driver")}
+        for i, tt in enumerate(targets):
+            if STATE.is_cancelled():
+                log("Remocao cancelada.", "warn")
+                break
+            status(f"Removendo {tt['name']} ({i + 1}/{len(targets)})", i, len(targets))
+            ok, _ = printer_install.remove_printer(tt["name"])
+            log(f"{'Removida' if ok else 'FALHOU'}: {tt['name']}", "ok" if ok else "err")
+            ok_n += 1 if ok else 0
+        if remove_ports and not STATE.is_cancelled():
+            remaining = {pp["port"] for pp in list_installed() if pp.get("port")}
+            for port in sorted(used_ports):
+                if not port or port in remaining:
+                    continue
+                if not printer_install.is_removable_port(port):
+                    log(f"Porta preservada (sistema): {port}", "warn")
+                    continue
+                okp, _ = printer_install.remove_printer_port(port)
+                log(f"{'Porta removida' if okp else 'Porta mantida'}: {port}",
+                    "ok" if okp else "warn")
+                ports_rm += 1 if okp else 0
+        if remove_drivers and not STATE.is_cancelled():
+            try:
+                _c2, _lst = printer_install.run_ps(
+                    "Get-Printer | Select-Object -ExpandProperty DriverName 2>&1 | Out-String")
+                in_use = {ll.strip() for ll in (_lst or "").splitlines() if ll.strip()}
+                for dn in sorted(target_drivers):
+                    if not dn or dn in in_use:
+                        continue
+                    if dn.lower().startswith("microsoft"):
+                        continue
+                    _c, _o = printer_install.run_ps(
+                        "Remove-PrinterDriver -Name '" + dn.replace("'", "''") + "' -Confirm:$false 2>&1 | Out-String")
+                    log(f"Driver {'removido' if _c == 0 else 'mantido'}: {dn}", "ok" if _c == 0 else "warn")
+            except Exception as e:
+                log(f"Falha ao remover drivers: {e}", "warn")
+        log(f"Resumo: {ok_n} impressora(s) removida(s), {ports_rm} porta(s).", "ok")
+        status(f"Remocao: {ok_n}/{len(targets)} impressoras, {ports_rm} portas.", 1, 1)
+    finally:
+        STATE.finish()
+        publish_busy()
     STATE.bus.publish("done", {"action": "remove", "ok": ok_n, "fail": 0})
+

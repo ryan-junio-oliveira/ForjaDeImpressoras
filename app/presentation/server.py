@@ -29,6 +29,8 @@ TOKEN = os.environ.get("PI_TOKEN") or secrets.token_urlsafe(24)
 COOKIE = "pitoken"
 
 mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("audio/mpeg", ".mp3")
+mimetypes.add_type("audio/ogg", ".ogg")
 mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("font/woff", ".woff")
 
@@ -183,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
 
         q = api.STATE.bus.subscribe()
         try:
-            for msg in api.STATE.bus.snapshot():
+            for msg in api.replay_snapshot():
                 self.wfile.write(f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                                  .encode("utf-8"))
             self.wfile.flush()
@@ -229,6 +231,8 @@ class Handler(BaseHTTPRequestHandler):
                     keep_virtual=bool(data.get("keep_virtual", True)),
                     remove_ports=bool(data.get("remove_ports", True)),
                     remove_drivers=bool(data.get("remove_drivers", False))))
+            elif path == "/api/cancel":
+                self._json(api.cancel_operation())
             elif path == "/api/settings":
                 api.set_auto_download(data.get("auto_download", True))
                 self._json({"ok": True, "auto_download": api.STATE.auto_download})

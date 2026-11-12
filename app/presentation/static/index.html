@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="pt-BR" data-rpg-theme="arcane" data-bs-theme="dark">
+<html lang="pt-BR" data-rpg-theme="industrial" data-bs-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Forja de Impressoras — Arcane Installer</title>
+<title>Forja de Impressoras — Oficina Industrial</title>
 <link rel="stylesheet" href="/static/vendor/bootstrap.min.css">
 <link rel="stylesheet" href="/static/vendor/bootstrap-icons.min.css">
 <link rel="stylesheet" href="/static/app.css">
@@ -65,21 +65,15 @@
         </button>
         <ul class="dropdown-menu dropdown-menu-end rpg-dropdown-menu">
           <li>
-            <button class="dropdown-item d-flex align-items-center gap-2 active" type="button" data-set-theme="arcane">
-              <span class="theme-dot dot-arcane"></span>
-              <span>Arcano Noturno (Dark Fantasy)</span>
-            </button>
-          </li>
-          <li>
-            <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-set-theme="cyber">
-              <span class="theme-dot dot-cyber"></span>
-              <span>Cyber-Masmorra (Sci-Fi Neon)</span>
-            </button>
-          </li>
-          <li>
             <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-set-theme="paladin">
               <span class="theme-dot dot-paladin"></span>
               <span>Paladino Dourado (Luz Real)</span>
+            </button>
+          </li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2 active" type="button" data-set-theme="industrial">
+              <span class="theme-dot dot-industrial"></span>
+              <span>Oficina Industrial (Aço e Segurança)</span>
             </button>
           </li>
         </ul>
@@ -128,6 +122,9 @@
         <button id="btnScan" class="rpg-btn rpg-btn-hero w-100" type="button">
           <i class="bi bi-radar me-1" id="scanBtnIcon"></i>
           <span>EXPLORAR REINO</span>
+        </button>
+        <button id="btnCancel" class="rpg-btn rpg-btn-danger-outline w-100 mt-1" type="button" hidden>
+          <i class="bi bi-stop-circle me-1"></i><span>CANCELAR</span>
         </button>
       </div>
 
@@ -257,14 +254,14 @@
   <div class="progress-details">
     <div class="status-indicator">
       <i class="bi bi-shield-shaded status-icon" id="statusIcon"></i>
-      <span id="statusText" class="status-msg">Grimório pronto para a jornada.</span>
+      <span id="statusText" class="status-msg" aria-live="polite">Grimório pronto para a jornada.</span>
     </div>
     <div class="xp-indicator">
       <span class="xp-label">PROGRESSO:</span>
       <span id="statusPct" class="xp-val">0%</span>
     </div>
   </div>
-  <div class="rpg-bar-track">
+  <div class="rpg-bar-track" role="progressbar" aria-label="Progresso da operacao" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack">
     <div class="rpg-bar-fill" id="progressBar" style="width: 0%">
       <span class="bar-shine"></span>
     </div>
@@ -393,7 +390,7 @@
 </div>
 
 <!-- ============================ NOTIFICAÇÕES TOAST ============================ -->
-<div class="toast-container position-fixed top-0 end-0 p-3" id="toasts"></div>
+<div class="toast-container position-fixed top-0 end-0 p-3" id="toasts" aria-live="polite"></div>
 
 <script src="/static/vendor/bootstrap.bundle.min.js"></script>
 <script src="/static/app.js"></script>
