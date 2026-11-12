@@ -1,0 +1,4 @@
+# Normalizacao de fim de linha: .bat EXIGE CRLF (o cmd quebra
+# com LF puro: "... foi inesperado neste momento").
+*.bat text eol=crlf
+*.iss text eol=crlf
