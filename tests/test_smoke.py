@@ -9,6 +9,8 @@ Uso:
     python tests/test_smoke.py
 """
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -40,6 +42,40 @@ class TestCaminhos(unittest.TestCase):
         vendor = paths.STATIC_DIR / "vendor"
         self.assertTrue((vendor / "bootstrap.min.css").exists(),
                         "Bootstrap nao vendorizado (interface quebrada offline)")
+
+    def test_mudo_corta_tudo_e_retoma(self):
+        # Regressao: mutar precisa pausar loop + one-shots em voo, e
+        # desmutar retoma o loop se a operacao continua (wantLoop).
+        # Checa o contrato no fonte (unico ponto de troca do estado).
+        js = (paths.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function setSoundEnabled(on)", js)
+        self.assertIn("live.add(el)", js)
+        self.assertIn("live.forEach((el)", js)
+        # botao e init passam pelo contrato, sem mexer no estado direto
+        self.assertIn("SoundFx.setSoundEnabled(!S.soundEnabled)", js)
+        self.assertIn(
+            "SoundFx.setSoundEnabled(localStorage.getItem('rpg-sound')",
+            js)
+        self.assertNotIn("S.soundEnabled = !S.soundEnabled", js)
+
+    def test_musica_medieval_vendorizada(self):
+        # Musica real em /static/audio (funciona offline); cada faixa
+        # precisa existir e ter tamanho de audio de verdade.
+        audio = paths.STATIC_DIR / "audio"
+        faixas = (("minstrel.mp3", (b"ID3", b"\xff\xfb")),
+                  ("lord.mp3", (b"ID3", b"\xff\xfb")),
+                  ("celtic.mp3", (b"ID3", b"\xff\xfb")),
+                  ("fanfare.mp3", (b"ID3", b"\xff\xfb")),
+                  ("mighty.mp3", (b"ID3", b"\xff\xfb")),
+                  ("bell.ogg", (b"OggS",)))
+        for nome, magias in faixas:
+            with self.subTest(faixa=nome):
+                f = audio / nome
+                self.assertTrue(f.exists(), f"{nome} ausente")
+                raw = f.read_bytes()
+                self.assertGreater(len(raw), 500_000, f"{nome} pequeno demais")
+                self.assertTrue(any(raw.startswith(m) for m in magias),
+                                f"{nome} nao e audio valido")
 
 
 class TestSegurancaDriver(unittest.TestCase):
@@ -129,6 +165,100 @@ class TestVarredura(unittest.TestCase):
         alvos, _ = expand_targets(["192.168.15.50"], include_arp=False)
         self.assertEqual(alvos, ["192.168.15.50"])
 
+    def test_expansao_ignora_ips_nao_varriveis(self):
+        from app.core.network import expand_targets
+        alvos, avisos = expand_targets(
+            ["224.0.0.1", "127.0.0.1", "999.0.0.1"], include_arp=False)
+        self.assertEqual(alvos, [])
+        self.assertTrue(avisos)
+
+    def test_replay_sem_done_fantasma(self):
+        """Replay do SSE nao pode re-disparar `done` (fanfarra fantasma)."""
+        from app.presentation import api
+        api.STATE.bus.publish("busy", {"busy": "scan"})
+        api.STATE.bus.publish("busy", {"busy": None})
+        api.STATE.bus.publish("done", {"action": "install", "ok": 1,
+                                       "fail": 0})
+        rep = api.replay_snapshot()
+        tipos = [m.get("type") for m in rep]
+        self.assertNotIn("done", tipos)
+        busies = [m for m in rep if m.get("type") == "busy"]
+        self.assertTrue(busies)
+        self.assertEqual(busies[-1], {"type": "busy",
+                                      "data": {"busy": None}})
+
+
+class TestVarreduraSemTravar(unittest.TestCase):
+    """O sweep nunca pode congelar: futuro preso nao para a coleta."""
+
+    def test_ping_invalido_nao_spawna_processo(self):
+        from app.core import scanner
+        t0 = time.monotonic()
+        self.assertFalse(scanner.ping_host("999.1.1.1"))
+        self.assertFalse(scanner.ping_host("224.0.0.1"))
+        self.assertFalse(scanner.ping_host(""))
+        self.assertLess(time.monotonic() - t0, 5)
+
+    def test_ping_sem_pipes(self):
+        """ping_host nao pode usar pipes (reader-threads travam no Windows)."""
+        from app.core import scanner
+        fonte = Path(scanner.__file__).read_text(encoding="utf-8")
+        bloco = fonte[fonte.find("def ping_host"):fonte.find("def check_port")]
+        self.assertIn("DEVNULL", bloco)
+        self.assertNotIn("capture_output", bloco)
+
+    def test_drain_respeita_teto(self):
+        """Um futuro eternamente preso nao congela o _drain."""
+        from concurrent.futures import ThreadPoolExecutor
+        from app.core.scanner import _drain
+        stop = threading.Event()
+        ex = ThreadPoolExecutor(max_workers=2)
+        try:
+            preso = ex.submit(stop.wait)
+            rapido = ex.submit(lambda: 42)
+            vistos = []
+            n = _drain(ex, {preso: "1.1.1.1", rapido: "2.2.2.2"},
+                       0, 2, None, None, 2,
+                       lambda d, t, ip: f"{d}/{t}",
+                       lambda f, ip: vistos.append(ip),
+                       tick_s=1)
+            self.assertEqual(n, 1)
+            self.assertEqual(vistos, ["2.2.2.2"])
+        finally:
+            stop.set()
+            ex.shutdown(wait=True)
+
+    def test_filtro_de_ruido_readerthread(self):
+        """threading.excepthook filtra SO o EBADF da _readerthread."""
+        import threading
+        from types import SimpleNamespace
+        from app.platform import process as proc
+        proc.install_readerthread_excepthook()
+        self.assertEqual(threading.excepthook.__name__,
+                         "forja_readerthread_filter")
+        proc.install_readerthread_excepthook()  # idempotente
+        chamadas = []
+        anterior = threading.excepthook
+        threading.excepthook = chamadas.append
+        try:
+            proc.install_readerthread_excepthook()
+            filtro = threading.excepthook
+            frame = SimpleNamespace(
+                f_code=SimpleNamespace(co_name="_readerthread",
+                                       co_filename="C:\\Python\\Lib\\subprocess.py"))
+            tb = SimpleNamespace(tb_frame=frame, tb_next=None)
+            # caso real: OSError 9 na _readerthread -> engolido
+            filtro(SimpleNamespace(exc_value=OSError(9, "Bad file descriptor"),
+                                   exc_traceback=tb))
+            self.assertEqual(chamadas, [])
+            # outros erros passam normalmente
+            filtro(SimpleNamespace(exc_value=OSError(2, "x"), exc_traceback=tb))
+            filtro(SimpleNamespace(exc_value=ValueError("x"),
+                                   exc_traceback=None))
+            self.assertEqual(len(chamadas), 2)
+        finally:
+            threading.excepthook = anterior
+
 
 class TestVersion(unittest.TestCase):
     def test_versao_lida_do_arquivo(self):
@@ -213,6 +343,78 @@ class TestCaminhosGravaveis(unittest.TestCase):
 
     def test_drivers_dir_existe(self):
         self.assertTrue(paths.drivers_dir().is_dir())
+
+
+class TestRunBat(unittest.TestCase):
+    """O run.bat precisa elevar para admin SEM corromper os argumentos."""
+
+    def _bat(self):
+        return (ROOT / "run.bat").read_text(encoding="utf-8")
+
+    def test_sem_forward_de_asterisco_simples(self):
+        # "'%*'" vira UM argumento so (cmd nao entende aspas simples):
+        # quebrava "scan <CIDR>" e injetava '' fantasma no desktop.
+        self.assertNotIn("'%*'", self._bat())
+
+    def test_desktop_nao_repassa_modo_cru(self):
+        # "--mode desktop %*" duplicava a palavra do modo ("browser",
+        # "servidor") e fazia o argparse falhar.
+        self.assertNotIn("--mode desktop %*", self._bat())
+
+    def test_executa_main_como_admin(self):
+        # O bat so faz isso: garante admin e roda o main.py desktop.
+        bat = self._bat()
+        self.assertIn("net session", bat)
+        self.assertIn("Verb RunAs", bat)
+        self.assertIn("python main.py --mode desktop", bat)
+
+    def test_sem_dispatch_de_modo(self):
+        # Sem if de modo, sem call, sem repasse de args: minimalista.
+        bat = self._bat().lower()
+        self.assertNotIn("call ", bat)
+        self.assertNotIn("%~1", bat)
+        self.assertNotIn("%*", bat)
+        self.assertNotIn("goto :scan", bat)
+        self.assertNotIn("goto :server", bat)
+
+    def test_bat_usa_crlf(self):
+        # O parser do cmd exige CRLF: .bat com LF puro quebra blocos
+        # if/for com "... foi inesperado neste momento".
+        # (As ferramentas de edicao normalizam para LF: apos editar um
+        # .bat, reconverter com:
+        #  python -c "import pathlib; [pathlib.Path(f).write_bytes(pathlib.Path(f).read_bytes().replace(bytes([13,10]),bytes([10])).replace(bytes([10]),bytes([13,10]))) for f in ['run.bat','scripts/build.bat']]")
+        for rel in ("run.bat", "scripts/build.bat"):
+            raw = (ROOT / rel).read_bytes()
+            lf = raw.count(b"\n")
+            crlf = raw.count(b"\r\n")
+            with self.subTest(arquivo=rel):
+                self.assertGreater(crlf, 0, f"{rel} sem CRLF")
+                self.assertEqual(lf, crlf, f"{rel} tem LF solitario (exige CRLF)")
+
+    def test_for_sem_parenteses_no_in(self):
+        # O parser do cmd conta parenteses mesmo entre aspas dentro do
+        # IN ('...') do for: um ')' ali dentro fecha o conjunto antes da
+        # hora e o bat morre com "... foi inesperado neste momento".
+        import re
+        for i, line in enumerate(self._bat().splitlines(), start=1):
+            m = re.match(r"\s*for\s+/f\b.*? in \(", line, re.I)
+            if not m:
+                continue
+            depth = 1
+            j = m.end()
+            while j < len(line) and depth > 0:
+                c = line[j]
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                j += 1
+            resto = line[j:].strip().lower()
+            with self.subTest(linha=i):
+                self.assertTrue(
+                    resto.startswith("do "),
+                    f"run.bat:{i}: ')' prematuro no IN do for: {line.strip()}",
+                )
 
 
 if __name__ == "__main__":
